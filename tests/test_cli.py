@@ -47,3 +47,30 @@ def test_stub_commands_exit_with_message(command: str, files: tuple[Path, Path])
 def test_plan_rejects_missing_file(tmp_path: Path) -> None:
     result = runner.invoke(app, ["plan", str(tmp_path / "nope.txt"), str(tmp_path / "x.jsonl")])
     assert result.exit_code == 2
+
+
+def test_profile_command_table(files: tuple[Path, Path]) -> None:
+    prompt, data = files
+    result = runner.invoke(app, ["profile", str(data), "--prompt", str(prompt)])
+    assert result.exit_code == 0, result.output
+    assert "text" in result.output
+    assert "input" in result.output
+
+
+def test_profile_command_json(files: tuple[Path, Path]) -> None:
+    import json
+
+    _, data = files
+    result = runner.invoke(app, ["profile", str(data), "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["n_rows"] == 1
+    assert payload["columns"][0]["name"] == "text"
+
+
+def test_profile_command_bad_dataset(tmp_path: Path) -> None:
+    data = tmp_path / "bad.jsonl"
+    data.write_text("not json\n")
+    result = runner.invoke(app, ["profile", str(data)])
+    assert result.exit_code == 1
+    assert "line 1" in result.output

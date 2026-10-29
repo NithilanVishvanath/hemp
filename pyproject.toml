@@ -16,6 +16,7 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
+    "pydantic>=2.6",
     "rich>=13.7",
     "typer>=0.12",
 ]
@@ -55,3 +56,4 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
 python_version = "3.11"
 strict = true
 files = ["src"]
+plugins = ["pydantic.mypy"]

@@ -1,0 +1,8 @@
+{"id": 1, "review": "Great product, works exactly as described and arrived early.", "label": "positive", "source": "web"}
+{"id": 2, "review": "Terrible. Broke after two days and support never replied.", "label": "negative", "source": "app"}
+{"id": 3, "review": "It's fine. Nothing special but does the job.", "label": "neutral", "source": "web"}
+{"id": 4, "review": "Absolutely love it, would buy again without hesitation.", "label": "positive", "source": "web"}
+{"id": 5, "review": "Not worth the money at all, very disappointed.", "label": "negative", "source": "app"}
+{"id": 6, "review": "Decent quality for the price, a bit noisy though.", "label": "neutral", "source": "web"}
+{"id": 7, "review": "Stopped charging within a week. Avoid.", "label": "negative", "source": "app"}
+{"id": 8, "review": "Exceeded my expectations, the battery lasts forever.", "label": "positive", "source": "web"}

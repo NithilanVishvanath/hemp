@@ -1,0 +1,4 @@
+Classify the sentiment of this product review as exactly one of: positive, negative, neutral.
+Reply with the label only.
+
+Review: {review}

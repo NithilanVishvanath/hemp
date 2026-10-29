@@ -1,5 +1,6 @@
 """Command-line interface for HEMP."""
 
+import sys
 from pathlib import Path
 from typing import Annotated, NoReturn
 
@@ -7,6 +8,9 @@ import typer
 from rich.console import Console
 
 from hemp import __version__
+from hemp.dataset import DatasetError
+from hemp.profile import profile_dataset
+from hemp.profile.render import print_profile
 
 app = typer.Typer(
     name="hemp",
@@ -20,7 +24,8 @@ PromptArg = Annotated[
     Path, typer.Argument(help="Prompt template file.", exists=True, dir_okay=False)
 ]
 DataArg = Annotated[
-    Path, typer.Argument(help="Dataset file (JSONL or CSV).", exists=True, dir_okay=False)
+    Path,
+    typer.Argument(help="Dataset file (JSONL, JSON, CSV, or TSV).", exists=True, dir_okay=False),
 ]
 
 
@@ -51,6 +56,40 @@ def main(
     ] = False,
 ) -> None:
     """HEMP (Help Evaluate My Prompt)."""
+    # Don't crash on characters the terminal can't encode (e.g. Windows cp1252 consoles).
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(errors="replace")
+
+
+@app.command()
+def profile(
+    data: DataArg,
+    prompt: Annotated[
+        Path | None,
+        typer.Option(
+            "--prompt",
+            "-p",
+            help="Prompt template file. Its {placeholders} tell inputs apart from gold columns.",
+            exists=True,
+            dir_okay=False,
+        ),
+    ] = None,
+    samples: Annotated[int, typer.Option(help="Number of sample rows to keep.", min=0)] = 5,
+    as_json: Annotated[bool, typer.Option("--json", help="Print the profile as JSON.")] = False,
+) -> None:
+    """Profile a dataset: column types, roles, value stats. No model calls."""
+    prompt_text = prompt.read_text(encoding="utf-8-sig") if prompt else None
+    try:
+        result = profile_dataset(data, prompt=prompt_text, n_samples=samples)
+    except DatasetError as e:
+        err_console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=1) from None
+    if as_json:
+        typer.echo(result.model_dump_json(indent=2))
+    else:
+        print_profile(result)
 
 
 @app.command()
