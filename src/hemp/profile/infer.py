@@ -8,7 +8,17 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
+from hemp.hashing import canonical_json
 from hemp.profile.schema import ColumnType
+
+__all__ = [
+    "Value",
+    "ValueKind",
+    "canonical_json",
+    "classify",
+    "infer_column_type",
+    "is_categorical",
+]
 
 _INT_RE = re.compile(r"[+-]?\d+")
 _FLOAT_RE = re.compile(r"[+-]?(\d+\.\d*|\.\d+|\d+)([eE][+-]?\d+)?")
@@ -73,10 +83,6 @@ def classify(raw: Any) -> Value:
             kind = ValueKind.OBJECT if isinstance(parsed, dict) else ValueKind.ARRAY
             return Value(kind, parsed, text, from_json_string=True)
     return Value(ValueKind.STRING, text, text)
-
-
-def canonical_json(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
 
 def infer_column_type(values: Iterable[Value]) -> ColumnType:

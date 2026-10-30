@@ -51,7 +51,7 @@ def render_profile(profile: DatasetProfile) -> RenderableType:
 
 
 def print_profile(profile: DatasetProfile, console: Console | None = None) -> None:
-    (console or Console()).print(render_profile(profile))
+    (console or Console(emoji=False)).print(render_profile(profile))
 
 
 def _details(col: ColumnProfile) -> str:

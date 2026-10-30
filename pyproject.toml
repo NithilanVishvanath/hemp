@@ -16,7 +16,9 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
+    "dspy>=3.4.1",
     "pydantic>=2.6",
+    "pyyaml>=6.0.3",
     "rich>=13.7",
     "typer>=0.12",
 ]
@@ -29,6 +31,7 @@ dev = [
     "mypy>=1.10",
     "pytest>=8.0",
     "ruff>=0.6",
+    "types-pyyaml>=6.0.12.20260906",
 ]
 
 [build-system]
@@ -57,3 +60,13 @@ python_version = "3.11"
 strict = true
 files = ["src"]
 plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+# dspy and litellm ship without type information.
+module = ["dspy", "dspy.*", "litellm", "litellm.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# DSPy signatures and modules are declared by subclassing dspy classes.
+module = ["hemp.plan.planner"]
+disallow_subclassing_any = false
