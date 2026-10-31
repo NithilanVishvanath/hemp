@@ -1,4 +1,8 @@
-"""EvalPlan: the reviewable, hashable description of how a prompt is evaluated."""
+"""EvalPlan: the hashable description of how a prompt is evaluated.
+
+This is HEMP's internal shape. The YAML file people edit uses a simpler layout;
+see `hemp.plan.io` for the translation.
+"""
 
 from datetime import datetime
 from enum import StrEnum
@@ -12,7 +16,6 @@ PLAN_SCHEMA_VERSION = 1
 
 
 class _Model(BaseModel):
-    # extra="forbid" turns typos in hand-edited plans into errors instead of silent no-ops.
     model_config = ConfigDict(frozen=True, extra="forbid")
 
 
@@ -31,20 +34,21 @@ class Criterion(_Model):
 
     id: str = Field(min_length=1)
     question: str = Field(min_length=1)
-    source: str = ""  # the prompt instruction this criterion checks
 
 
 class BaselineKind(StrEnum):
-    MAJORITY_CLASS = "majority_class"  # always predict the most common gold value
-    ZERO_SHOT = "zero_shot"  # the bare input with no instructions
+    MAJORITY_CLASS = "majority_class"  # always answer the most common gold value
+    ZERO_SHOT = "zero_shot"  # the bare input columns with no instructions
+
+    @property
+    def description(self) -> str:
+        return _BASELINE_DESCRIPTIONS[self]
 
 
-class Baseline(_Model):
-    id: str = Field(min_length=1)
-    kind: BaselineKind
-    gold_column: str | None = None
-    prompt: str | None = None  # template used by zero_shot
-    rationale: str = ""
+_BASELINE_DESCRIPTIONS = {
+    BaselineKind.MAJORITY_CLASS: "always answer the most common label",
+    BaselineKind.ZERO_SHOT: "the input with no instructions",
+}
 
 
 class PlanMeta(_Model):
@@ -61,13 +65,15 @@ class PlanMeta(_Model):
 class EvalPlan(_Model):
     schema_version: int = PLAN_SCHEMA_VERSION
     meta: PlanMeta
+    # Python files (relative to the plan file) or modules defining custom metrics.
+    plugins: list[str] = []
     input_columns: list[str]
     gold_columns: list[str] = []
     format_checks: list[CheckSpec] = []
     reference_metrics: list[CheckSpec] = []
     criteria: list[Criterion] = []
     custom_metrics: list[CheckSpec] = []
-    baselines: list[Baseline] = []
+    baselines: list[BaselineKind] = []
 
     @model_validator(mode="after")
     def _check_consistency(self) -> Self:
@@ -76,31 +82,23 @@ class EvalPlan(_Model):
                 f"schema_version {self.schema_version} isn't supported by this HEMP "
                 f"(expected {PLAN_SCHEMA_VERSION}). Re-create the plan with `hemp plan`."
             )
-        ids = [item.id for item in self.all_items()]
+        ids = [c.id for c in self.checks()] + [q.id for q in self.criteria]
         dupes = sorted({i for i in ids if ids.count(i) > 1})
         if dupes:
             raise ValueError(f"ids must be unique; duplicated: {', '.join(dupes)}")
-        gold_users: list[CheckSpec | Baseline] = [
-            *self.reference_metrics,
-            *self.custom_metrics,
-            *self.baselines,
-        ]
-        for item in gold_users:
-            if item.gold_column is not None and item.gold_column not in self.gold_columns:
+        for spec in self.checks():
+            if spec.gold_column is not None and spec.gold_column not in self.gold_columns:
                 raise ValueError(
-                    f"'{item.id}' uses gold column '{item.gold_column}', which isn't listed "
-                    "in gold_columns. Add it there or fix the name."
+                    f"'{spec.id}' compares to '{spec.gold_column}', which isn't an answer "
+                    "column. Add it under columns: answer, or fix the name."
                 )
+        if BaselineKind.MAJORITY_CLASS in self.baselines and not self.gold_columns:
+            raise ValueError("majority_class needs an answer column; remove it or add one.")
         return self
 
-    def all_items(self) -> list[CheckSpec | Criterion | Baseline]:
-        return [
-            *self.format_checks,
-            *self.reference_metrics,
-            *self.criteria,
-            *self.custom_metrics,
-            *self.baselines,
-        ]
+    def checks(self) -> list[CheckSpec]:
+        """All metric checks, in file order: format, reference, then custom."""
+        return [*self.format_checks, *self.reference_metrics, *self.custom_metrics]
 
     def content(self) -> dict[str, Any]:
         """Everything that defines the evaluation, i.e. the plan minus `meta`."""

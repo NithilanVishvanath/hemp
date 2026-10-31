@@ -1,0 +1,4 @@
+Extract the person's details from the text below.
+Return only a JSON object with the keys "name", "age" and "city". Use null for anything not mentioned.
+
+Text: {text}

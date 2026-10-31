@@ -1,0 +1,4 @@
+Answer the question in one or two sentences. Be accurate and don't add information that isn't needed.
+If you don't know, say "I don't know".
+
+Question: {question}

@@ -1,0 +1,35 @@
+# HEMP evaluation plan. Edit it freely, then check your edits with:
+#   hemp validate prompt.plan.yaml
+#
+# `hemp metrics` lists every check and its settings.
+
+columns:
+  input: [review]
+  answer: label
+
+checks:  # automatic, no LLM needed
+- check: non_empty
+  why: every prompt should produce some output
+- check: allowed_values
+  values: [negative, positive, neutral]
+  why: outputs should be one of the labels in label
+- check: exact_match
+  compare_to: label
+  why: outputs should match label exactly
+
+questions: []  # yes/no questions for an LLM judge, e.g.
+#  - id: q1
+#    ask: Is the answer polite?
+
+baselines:  # simple strategies your prompt should beat
+  - majority_class  # always answer the most common label
+  - zero_shot  # the input with no instructions
+
+# --- Written by HEMP. Don't edit below this line. ---
+about:
+  created: '2026-10-31T11:04:53Z'
+  dataset: examples\sentiment\data.jsonl
+  prompt_hash: 5e6b7361387cddf8671f02d568f9ee698f82b72aaa74dd977a82fd30ffeec008
+  dataset_hash: d93945bda26039c3b9d1480d63240220378d43ea4d084fe5d23d77f15957cb04
+  hemp_version: 0.1.0
+  schema_version: 1

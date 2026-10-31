@@ -1,0 +1,6 @@
+{"text": "Priya Sharma, 34, moved to Pune last spring to start a bakery.", "expected": {"name": "Priya Sharma", "age": 34, "city": "Pune"}}
+{"text": "The award went to Tom Becker of Hamburg, who is 51.", "expected": {"name": "Tom Becker", "age": 51, "city": "Hamburg"}}
+{"text": "Aiko Tanaka has lived in Osaka her whole life.", "expected": {"name": "Aiko Tanaka", "age": null, "city": "Osaka"}}
+{"text": "At 27, Marcus Lee is the youngest partner at his firm.", "expected": {"name": "Marcus Lee", "age": 27, "city": null}}
+{"text": "Lena Fischer (62) runs a small bookshop in Vienna.", "expected": {"name": "Lena Fischer", "age": 62, "city": "Vienna"}}
+{"text": "Carlos Ruiz, a 45-year-old engineer from Madrid, holds three patents.", "expected": {"name": "Carlos Ruiz", "age": 45, "city": "Madrid"}}

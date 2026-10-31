@@ -113,7 +113,7 @@ def test_plan_with_fake_model(files: tuple[Path, Path], monkeypatch: pytest.Monk
     assert result.exit_code == 0, result.output
     text = out.read_text(encoding="utf-8")
     assert "Is the label justified by the text?" in text
-    assert "planner_model: fake/m" in text
+    assert "planner: fake/m" in text
 
 
 def test_validate_reports_problems(tmp_path: Path) -> None:
@@ -121,7 +121,7 @@ def test_validate_reports_problems(tmp_path: Path) -> None:
     bad.write_text("schema_version: 1\n")
     result = runner.invoke(app, ["validate", str(bad)])
     assert result.exit_code == 1
-    assert "meta" in result.output
+    assert "columns: Field required" in result.output
 
 
 def test_metrics_lists_builtins() -> None:

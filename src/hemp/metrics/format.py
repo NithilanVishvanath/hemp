@@ -6,7 +6,7 @@ from typing import Literal, Self
 from pydantic import Field, field_validator, model_validator
 
 from hemp.metrics.registry import MetricContext, MetricLayer, MetricParams, MetricResult, metric
-from hemp.metrics.text import normalize, parse_json
+from hemp.metrics.text import has_path, normalize, parse_json
 
 
 @metric("non_empty", layer=MetricLayer.FORMAT)
@@ -32,8 +32,10 @@ def valid_json(ctx: MetricContext, params: JsonParams) -> MetricResult:
 
 
 class JsonKeysParams(JsonParams):
-    required: list[str] = Field(min_length=1, description="keys the JSON object must contain")
-    allow_extra: bool = Field(True, description="allow keys not listed in `required`")
+    required: list[str] = Field(
+        min_length=1, description="keys the JSON object must contain; use a.b for nested keys"
+    )
+    allow_extra: bool = Field(True, description="allow top-level keys not named in `required`")
 
 
 @metric("json_keys", layer=MetricLayer.FORMAT, params=JsonKeysParams)
@@ -46,11 +48,12 @@ def json_keys(ctx: MetricContext, params: JsonKeysParams) -> MetricResult:
     if not isinstance(value, dict):
         return MetricResult.check(False, f"expected a JSON object, got {type(value).__name__}")
     problems = []
-    missing = [k for k in params.required if k not in value]
+    missing = [k for k in params.required if not has_path(value, k)]
     if missing:
         problems.append(f"missing keys: {', '.join(missing)}")
     if not params.allow_extra:
-        extra = [k for k in value if k not in params.required]
+        top_level = {k.split(".")[0] for k in params.required}
+        extra = [k for k in value if k not in top_level]
         if extra:
             problems.append(f"unexpected keys: {', '.join(extra)}")
     return MetricResult.check(not problems, "; ".join(problems))
@@ -63,7 +66,7 @@ class AllowedValuesParams(MetricParams):
 
 @metric("allowed_values", layer=MetricLayer.FORMAT, params=AllowedValuesParams)
 def allowed_values(ctx: MetricContext, params: AllowedValuesParams) -> MetricResult:
-    """The whole output is one of a fixed set of values (ignoring quotes, trailing period)."""
+    """The whole output is one of a fixed set of values (ignoring quotes, markdown, period)."""
     got = normalize(ctx.output, params.case_sensitive)
     allowed = {normalize(v, params.case_sensitive) for v in params.values}
     if got in allowed:

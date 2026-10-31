@@ -9,11 +9,12 @@ import types
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, TypeVar, Union, get_args, get_origin
+from typing import Any, Self, TypeVar, Union, get_args, get_origin
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from hemp.dataset import Row
+from hemp.metrics.text import is_missing
 
 
 class MetricLayer(StrEnum):
@@ -29,15 +30,32 @@ class MetricParams(BaseModel):
 
 
 class MetricResult(BaseModel):
+    """One metric on one output. `passed`/`score` are None when the metric was skipped."""
+
     model_config = ConfigDict(frozen=True)
 
-    passed: bool
-    score: float  # 0..1; equals 1/0 for pass/fail metrics
+    passed: bool | None
+    score: float | None = Field(ge=0, le=1)  # equals 1/0 for pass/fail metrics
     detail: str = ""
+
+    @model_validator(mode="after")
+    def _skip_is_consistent(self) -> Self:
+        if (self.passed is None) != (self.score is None):
+            raise ValueError("passed and score must both be None (skipped) or both set")
+        return self
+
+    @property
+    def skipped(self) -> bool:
+        return self.passed is None
 
     @classmethod
     def check(cls, passed: bool, detail: str = "") -> "MetricResult":
         return cls(passed=passed, score=1.0 if passed else 0.0, detail=detail)
+
+    @classmethod
+    def skip(cls, detail: str) -> "MetricResult":
+        """Not applicable to this row, e.g. its gold value is missing. Excluded from scores."""
+        return cls(passed=None, score=None, detail=detail)
 
 
 @dataclass(frozen=True)
@@ -78,10 +96,16 @@ class MetricInfo:
             ) from None
 
     def __call__(self, ctx: MetricContext, params: Mapping[str, Any]) -> MetricResult:
-        return self.fn(ctx, self.validate_params(params))
+        validated = self.validate_params(params)
+        if self.requires_gold and is_missing(ctx.gold):
+            return MetricResult.skip("no gold value for this row")
+        return self.fn(ctx, validated)
 
 
 _REGISTRY: dict[str, MetricInfo] = {}
+
+# Keys a check entry in a plan file uses itself (see hemp.plan.io).
+RESERVED_PARAM_NAMES = frozenset({"id", "check", "compare_to", "why"})
 
 
 def metric(
@@ -100,6 +124,12 @@ def metric(
 
     def register(fn: MetricFn[P]) -> MetricFn[P]:
         metric_name = name or fn.__name__
+        clashes = sorted(set(params.model_fields) & RESERVED_PARAM_NAMES)
+        if clashes:
+            raise MetricError(
+                f"Metric '{metric_name}' has params named {', '.join(clashes)}, which plan "
+                "files use for other things. Rename them."
+            )
         doc = description or (inspect.getdoc(fn) or "").split("\n")[0]
         existing = _REGISTRY.get(metric_name)
         if existing is not None and existing.fn is not fn:

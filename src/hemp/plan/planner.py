@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from hemp._version import __version__
 from hemp.hashing import canonical_json
 from hemp.metrics import MetricError, MetricLayer, catalog, get_metric
+from hemp.metrics.embeddings import DEFAULT_EMBED_MODEL
 from hemp.plan.defaults import (
     default_baselines,
     default_format_checks,
@@ -106,15 +107,21 @@ def create_plan(
     *,
     lm: dspy.LM | None,
     planner_model: str | None = None,
+    embed_model: str = DEFAULT_EMBED_MODEL,
+    plugins: list[str] | None = None,
     now: datetime | None = None,
 ) -> PlanResult:
-    """Build an EvalPlan. With `lm=None`, only the rule-based parts are included."""
+    """Build an EvalPlan. With `lm=None`, only the rule-based parts are included.
+
+    `plugins` are recorded in the plan as given. Load them first (`load_plugin`) so
+    the planner can choose their metrics.
+    """
     warnings: list[str] = []
     rule_checks = default_format_checks()
     label_check = label_set_check(profile)
     if label_check is not None:
         rule_checks.append(label_check)
-    reference = default_reference_metrics(profile)
+    reference = default_reference_metrics(profile, embed_model)
     format_checks = list(rule_checks)
     custom: list[CheckSpec] = []
     criteria: list[Criterion] = []
@@ -146,6 +153,7 @@ def create_plan(
             dataset_hash=profile.dataset_hash,
             dataset_source=profile.source,
         ),
+        plugins=plugins or [],
         input_columns=profile.input_columns,
         gold_columns=profile.gold_columns,
         format_checks=_unique_ids(_dedupe(format_checks)),
@@ -257,9 +265,7 @@ def _accept_criteria(
         if not question or question.lower() in seen:
             continue
         seen.add(question.lower())
-        criteria.append(
-            Criterion(id=f"c{len(criteria) + 1}", question=question, source=p.instruction.strip())
-        )
+        criteria.append(Criterion(id=f"q{len(criteria) + 1}", question=question))
     if len(criteria) > MAX_CRITERIA:
         warnings.append(
             f"The planner proposed {len(criteria)} criteria; kept the first {MAX_CRITERIA}."

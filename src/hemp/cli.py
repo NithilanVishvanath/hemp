@@ -11,7 +11,8 @@ from rich.table import Table
 from hemp._version import __version__
 from hemp.config import ModelConfig, make_lm
 from hemp.dataset import DatasetError
-from hemp.metrics import list_metrics
+from hemp.metrics import MetricError, list_metrics, load_plugin
+from hemp.metrics.plugins import plugin_ref
 from hemp.metrics.registry import param_docs
 from hemp.plan import PlanError, PlannerError, create_plan, read_plan, write_plan
 from hemp.plan.render import render_plan
@@ -35,6 +36,23 @@ DataArg = Annotated[
     Path,
     typer.Argument(help="Dataset file (JSONL, JSON, CSV, or TSV).", exists=True, dir_okay=False),
 ]
+PluginOpt = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--plugin",
+        help="Python file or module with your own @hemp.metric metrics. Repeatable.",
+    ),
+]
+
+
+def _load_plugins(specs: list[str]) -> None:
+    for spec in specs:
+        try:
+            names = load_plugin(spec)
+        except MetricError as e:
+            _fail(str(e))
+        if names:
+            err_console.print(f"Loaded {spec}: {', '.join(names)}", style="dim", markup=False)
 
 
 def _fail(message: str) -> NoReturn:
@@ -129,9 +147,11 @@ def plan(
         typer.Option("--no-llm", help="Skip the LLM; only rule-based checks and baselines."),
     ] = False,
     force: Annotated[bool, typer.Option(help="Overwrite an existing plan file.")] = False,
+    plugin: PluginOpt = None,
 ) -> None:
     """Profile the dataset and write an editable evaluation plan (YAML)."""
     out_path = out or prompt.with_name(f"{prompt.stem}.plan.yaml")
+    plugins = plugin or []
     if out_path.exists() and not force:
         _fail(
             f"{out_path} already exists and may contain your edits. "
@@ -148,14 +168,24 @@ def plan(
             "Runs will fail until they match."
         )
 
-    model = planner_model or ModelConfig.from_env().planner
+    _load_plugins(plugins)
+    plugin_refs = [plugin_ref(spec, out_path.parent) for spec in plugins]
+    models = ModelConfig.from_env()
+    model = planner_model or models.planner
     try:
         if no_llm:
-            result = create_plan(prompt_text, data_profile, lm=None)
+            result = create_plan(
+                prompt_text, data_profile, lm=None, embed_model=models.embed, plugins=plugin_refs
+            )
         else:
             with err_console.status(f"Planning with {model}..."):
                 result = create_plan(
-                    prompt_text, data_profile, lm=make_lm(model), planner_model=model
+                    prompt_text,
+                    data_profile,
+                    lm=make_lm(model),
+                    planner_model=model,
+                    embed_model=models.embed,
+                    plugins=plugin_refs,
                 )
     except PlannerError as e:
         _fail(str(e))
@@ -186,8 +216,9 @@ def validate(
 
 
 @app.command()
-def metrics() -> None:
+def metrics(plugin: PluginOpt = None) -> None:
     """List the metrics a plan can use, with their params."""
+    _load_plugins(plugin or [])
     table = Table(header_style="bold")
     table.add_column("Metric")
     table.add_column("Layer")
