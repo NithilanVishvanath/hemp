@@ -20,7 +20,7 @@ uv run hemp plan examples/sentiment/prompt.txt examples/sentiment/data.jsonl
 
 Writes `examples/sentiment/prompt.plan.yaml`: format checks, reference metrics, yes/no rubric criteria and baselines. Review and edit it, then check your edits with `uv run hemp validate <plan>`. `uv run hemp metrics` lists the metrics a plan can use.
 
-The planner uses a local Ollama model by default (`ollama_chat/qwen2.5:14b`). Pick another with `--planner-model` or `HEMP_PLANNER_MODEL` (any LiteLLM model string), or skip the LLM with `--no-llm`.
+The planner uses a local Ollama model by default (`ollama_chat/qwen2.5:7b`). Pick another with `--planner-model` or `HEMP_PLANNER_MODEL` (any LiteLLM model string), or skip the LLM with `--no-llm`.
 
 ## Install (development)
 

@@ -57,10 +57,11 @@ class ProposeEvaluation(dspy.Signature):
        to the input, completeness, following a constraint), write one yes/no question
        about a single output, answerable from the input row and the output. "Yes" must
        mean the output follows the instruction. One instruction per question. Never use
-       rating scales. Don't repeat what format checks or reference answers already cover.
+       rating scales. Never ask about output format or labels; format checks cover those.
 
-    Only evaluate what the prompt actually asks for. Usually 0-5 format checks and
-    2-8 criteria.
+    already_included lists checks HEMP runs anyway: never propose them again, and never
+    write criteria that re-check them. Only evaluate what the prompt actually asks for.
+    Returning few or no criteria is fine when the prompt has little to judge.
     """
 
     prompt_template: str = dspy.InputField(
@@ -68,6 +69,7 @@ class ProposeEvaluation(dspy.Signature):
     )
     dataset_profile: str = dspy.InputField(desc="columns, their types and roles, sample rows")
     available_checks: str = dspy.InputField(desc="JSON list of metrics you may select")
+    already_included: str = dspy.InputField(desc="checks HEMP already runs on every output")
     format_checks: list[ProposedCheck] = dspy.OutputField()
     criteria: list[ProposedCriterion] = dspy.OutputField()
 
@@ -78,12 +80,17 @@ class Planner(dspy.Module):
         self.propose = dspy.ChainOfThought(ProposeEvaluation)
 
     def forward(
-        self, prompt_template: str, dataset_profile: str, available_checks: str
+        self,
+        prompt_template: str,
+        dataset_profile: str,
+        available_checks: str,
+        already_included: str,
     ) -> dspy.Prediction:
         return self.propose(
             prompt_template=prompt_template,
             dataset_profile=dataset_profile,
             available_checks=available_checks,
+            already_included=already_included,
         )
 
 
@@ -103,7 +110,12 @@ def create_plan(
 ) -> PlanResult:
     """Build an EvalPlan. With `lm=None`, only the rule-based parts are included."""
     warnings: list[str] = []
-    format_checks = default_format_checks()
+    rule_checks = default_format_checks()
+    label_check = label_set_check(profile)
+    if label_check is not None:
+        rule_checks.append(label_check)
+    reference = default_reference_metrics(profile)
+    format_checks = list(rule_checks)
     custom: list[CheckSpec] = []
     criteria: list[Criterion] = []
 
@@ -113,19 +125,17 @@ def create_plan(
             "format checks. Add them to the plan by hand, or re-run without --no-llm."
         )
     else:
-        proposal = _propose(prompt, profile, lm)
+        proposal = _propose(prompt, profile, [*rule_checks, *reference], lm)
         checks, check_warnings = _accept_checks(proposal.format_checks)
         warnings += check_warnings
+        if label_check is not None and any(c.metric == "allowed_values" for c in checks):
+            # Labels stated in the prompt beat labels inferred from the data.
+            format_checks.remove(label_check)
         for spec in checks:
             layer = get_metric(spec.metric).layer
             (custom if layer is MetricLayer.CUSTOM else format_checks).append(spec)
         criteria, criteria_warnings = _accept_criteria(proposal.criteria)
         warnings += criteria_warnings
-
-    if not any(c.metric == "allowed_values" for c in format_checks):
-        label_check = label_set_check(profile)
-        if label_check is not None:
-            format_checks.append(label_check)
 
     plan = EvalPlan(
         meta=PlanMeta(
@@ -138,10 +148,10 @@ def create_plan(
         ),
         input_columns=profile.input_columns,
         gold_columns=profile.gold_columns,
-        format_checks=_unique_ids(format_checks),
-        reference_metrics=default_reference_metrics(profile),
+        format_checks=_unique_ids(_dedupe(format_checks)),
+        reference_metrics=reference,
         criteria=criteria,
-        custom_metrics=_unique_ids(custom),
+        custom_metrics=_unique_ids(_dedupe(custom)),
         baselines=default_baselines(profile),
     )
     return PlanResult(plan=plan, warnings=warnings)
@@ -175,7 +185,19 @@ def describe_profile(profile: DatasetProfile) -> str:
     return "\n".join(lines)
 
 
-def _propose(prompt: str, profile: DatasetProfile, lm: dspy.LM) -> dspy.Prediction:
+def describe_checks(specs: list[CheckSpec]) -> str:
+    lines = []
+    for spec in specs:
+        params = dict(spec.params)
+        if spec.gold_column:
+            params["gold_column"] = spec.gold_column
+        lines.append(f"- {spec.metric} {json.dumps(params, ensure_ascii=False)}: {spec.rationale}")
+    return "\n".join(lines) or "(none)"
+
+
+def _propose(
+    prompt: str, profile: DatasetProfile, included: list[CheckSpec], lm: dspy.LM
+) -> dspy.Prediction:
     available = json.dumps(catalog(MetricLayer.FORMAT, MetricLayer.CUSTOM), indent=1)
     try:
         with dspy.context(lm=lm):
@@ -183,6 +205,7 @@ def _propose(prompt: str, profile: DatasetProfile, lm: dspy.LM) -> dspy.Predicti
                 prompt_template=prompt,
                 dataset_profile=describe_profile(profile),
                 available_checks=available,
+                already_included=describe_checks(included),
             )
     except Exception as e:
         raise PlannerError(_explain_failure(e, getattr(lm, "model", "the planner model"))) from e
@@ -209,7 +232,6 @@ def _explain_failure(error: Exception, model: str) -> str:
 def _accept_checks(proposed: list[ProposedCheck]) -> tuple[list[CheckSpec], list[str]]:
     accepted: list[CheckSpec] = []
     warnings: list[str] = []
-    seen: set[str] = set()
     for p in proposed:
         try:
             info = get_metric(p.metric)
@@ -219,13 +241,8 @@ def _accept_checks(proposed: list[ProposedCheck]) -> tuple[list[CheckSpec], list
         except MetricError as e:
             warnings.append(f"Dropped a proposed check: {e}")
             continue
-        key = canonical_json([p.metric, params])
-        if key in seen:
-            continue
-        seen.add(key)
-        accepted.append(
-            CheckSpec(id=p.metric, metric=p.metric, params=params, rationale=p.instruction.strip())
-        )
+        rationale = p.instruction.strip() or "proposed by the planner from the prompt"
+        accepted.append(CheckSpec(id=p.metric, metric=p.metric, params=params, rationale=rationale))
     return accepted, warnings
 
 
@@ -249,6 +266,18 @@ def _accept_criteria(
         )
         criteria = criteria[:MAX_CRITERIA]
     return criteria, warnings
+
+
+def _dedupe(specs: list[CheckSpec]) -> list[CheckSpec]:
+    """Drop checks with the same metric and params as an earlier one."""
+    seen: set[str] = set()
+    out = []
+    for spec in specs:
+        key = canonical_json([spec.metric, spec.params])
+        if key not in seen:
+            seen.add(key)
+            out.append(spec)
+    return out
 
 
 def _unique_ids(specs: list[CheckSpec]) -> list[CheckSpec]:

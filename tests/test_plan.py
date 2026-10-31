@@ -264,3 +264,34 @@ def test_read_missing_file(tmp_path: Path) -> None:
 def test_checkspec_requires_id() -> None:
     with pytest.raises(ValueError):
         CheckSpec(id="", metric="non_empty")
+
+
+def test_planner_repeats_of_rule_checks_are_dropped() -> None:
+    plan = plan_with(checks=[{"metric": "non_empty", "params": {}}], criteria=[]).plan
+    assert [c.id for c in plan.format_checks].count("non_empty") == 1
+    assert "non_empty_2" not in [c.id for c in plan.format_checks]
+
+
+def test_prompt_labels_replace_data_labels() -> None:
+    plan = plan_with(
+        checks=[{"metric": "allowed_values", "params": {"values": ["Positive", "Negative"]}}],
+        criteria=[],
+    ).plan
+    allowed = [c for c in plan.format_checks if c.metric == "allowed_values"]
+    assert len(allowed) == 1
+    assert allowed[0].params["values"] == ["Positive", "Negative"]
+
+
+def test_planner_check_gets_default_rationale() -> None:
+    plan = plan_with(checks=[{"metric": "length", "params": {"max": 3}}], criteria=[]).plan
+    length = next(c for c in plan.format_checks if c.metric == "length")
+    assert length.rationale == "proposed by the planner from the prompt"
+
+
+def test_planner_is_told_about_existing_checks() -> None:
+    lm = fake_lm(checks=[], criteria=[])
+    create_plan(PROMPT, sentiment_profile(), lm=lm, now=NOW)
+    sent = str(lm.history[-1]["messages"])
+    assert "already_included" in sent
+    assert "exact_match" in sent
+    assert "allowed_values" in sent

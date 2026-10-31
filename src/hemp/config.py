@@ -10,7 +10,7 @@ import os
 import dspy
 from pydantic import BaseModel
 
-DEFAULT_MODEL = "ollama_chat/qwen2.5:14b"
+DEFAULT_MODEL = "ollama_chat/qwen2.5:7b"
 
 
 class ModelConfig(BaseModel):

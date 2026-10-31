@@ -120,7 +120,7 @@ def plan(
     planner_model: Annotated[
         str | None,
         typer.Option(
-            help="LiteLLM model for planning, e.g. ollama_chat/qwen2.5:14b or openai/gpt-4o-mini. "
+            help="LiteLLM model for planning, e.g. ollama_chat/qwen2.5:7b or openai/gpt-4o-mini. "
             "Default: $HEMP_PLANNER_MODEL, $HEMP_MODEL, or a local Ollama model."
         ),
     ] = None,
