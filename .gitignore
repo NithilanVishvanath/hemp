@@ -10,6 +10,7 @@ dist/
 .coverage
 htmlcov/
 *.db
+.hemp/
 
 # Claude Code
 CLAUDE.md

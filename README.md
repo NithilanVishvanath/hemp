@@ -22,6 +22,14 @@ Writes `examples/sentiment/prompt.plan.yaml`: which columns are input and answer
 
 The planner uses a local Ollama model by default (`ollama_chat/qwen2.5:7b`). Pick another with `--planner-model` or `HEMP_PLANNER_MODEL` (any LiteLLM model string), or skip the LLM with `--no-llm`.
 
+## Run the evaluation
+
+```
+uv run hemp run examples/sentiment/prompt.txt examples/sentiment/data.jsonl
+```
+
+Runs your prompt on every row exactly as written, scores the outputs with the plan's checks, and does the same for the baselines so you can see whether your prompt beats them. Results are saved to `.hemp/hemp.db` (change it with `--db` or `$HEMP_DB`). `uv run hemp show` lists past runs; `uv run hemp show 3` shows run #3 with the examples that failed.
+
 ## Your own metrics
 
 Write a metric in a Python file:

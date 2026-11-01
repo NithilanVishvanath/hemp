@@ -5,6 +5,8 @@ from hemp.dataset import DatasetError, load_dataset
 from hemp.metrics import MetricContext, MetricParams, MetricResult, metric
 from hemp.plan import EvalPlan, PlanError, create_plan, read_plan, write_plan
 from hemp.profile import DatasetProfile, profile_dataset, profile_rows
+from hemp.runner import RunResult, run_eval
+from hemp.store import Store
 
 __all__ = [
     "DatasetError",
@@ -14,6 +16,8 @@ __all__ = [
     "MetricParams",
     "MetricResult",
     "PlanError",
+    "RunResult",
+    "Store",
     "__version__",
     "create_plan",
     "load_dataset",
@@ -21,5 +25,6 @@ __all__ = [
     "profile_dataset",
     "profile_rows",
     "read_plan",
+    "run_eval",
     "write_plan",
 ]

@@ -1,23 +1,29 @@
 """Command-line interface for HEMP."""
 
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, NoReturn
 
 import typer
 from rich.console import Console
+from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
 from hemp._version import __version__
 from hemp.config import ModelConfig, make_lm
-from hemp.dataset import DatasetError
+from hemp.dataset import DatasetError, load_dataset
 from hemp.metrics import MetricError, list_metrics, load_plugin
 from hemp.metrics.plugins import plugin_ref
 from hemp.metrics.registry import param_docs
 from hemp.plan import PlanError, PlannerError, create_plan, read_plan, write_plan
 from hemp.plan.render import render_plan
 from hemp.profile import profile_dataset
+from hemp.profile.profiler import dataset_hash
 from hemp.profile.render import print_profile
+from hemp.runner import PROMPT_VARIANT, RunError, RunResult, TargetError, run_eval
+from hemp.runner.render import render_failures, render_run, render_runs
+from hemp.store import Store, StoreError
 
 app = typer.Typer(
     name="hemp",
@@ -42,6 +48,11 @@ PluginOpt = Annotated[
         "--plugin",
         help="Python file or module with your own @hemp.metric metrics. Repeatable.",
     ),
+]
+
+DbOpt = Annotated[
+    Path | None,
+    typer.Option("--db", help="Results database. Default: $HEMP_DB or .hemp/hemp.db"),
 ]
 
 
@@ -231,9 +242,150 @@ def metrics(plugin: PluginOpt = None) -> None:
 
 
 @app.command()
-def run(prompt: PromptArg, data: DataArg) -> None:
-    """Execute the frozen evaluation plan and store results."""
-    _not_implemented("run", 5)
+def run(
+    prompt: PromptArg,
+    data: DataArg,
+    plan_file: Annotated[
+        Path | None,
+        typer.Option("--plan", help="Plan to run. Default: <prompt>.plan.yaml"),
+    ] = None,
+    target_model: Annotated[
+        str | None,
+        typer.Option(
+            help="LiteLLM model that runs your prompt. "
+            "Default: $HEMP_TARGET_MODEL, $HEMP_MODEL, or a local Ollama model."
+        ),
+    ] = None,
+    workers: Annotated[int, typer.Option(help="How many model calls to make at once.", min=1)] = 4,
+    no_baselines: Annotated[
+        bool, typer.Option("--no-baselines", help="Skip the plan's baselines.")
+    ] = False,
+    db: DbOpt = None,
+) -> None:
+    """Run your prompt on the dataset, score it with the plan, and store the results."""
+    plan_path = plan_file or prompt.with_name(f"{prompt.stem}.plan.yaml")
+    if not plan_path.is_file():
+        _fail(
+            f"No plan found at {plan_path}. Create one with `hemp plan {prompt} {data}`, "
+            "or point to one with --plan."
+        )
+    try:
+        loaded = read_plan(plan_path)
+        rows, _ = load_dataset(data)
+    except (PlanError, DatasetError) as e:
+        _fail(str(e))
+    if dataset_hash(rows) != loaded.meta.dataset_hash:
+        _warn(
+            f"{data} has changed since the plan was made. That's fine if you changed it on purpose."
+        )
+    prompt_text = prompt.read_text(encoding="utf-8-sig")
+    model = target_model or ModelConfig.from_env().target
+
+    with Progress(
+        TextColumn("{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        console=err_console,
+        transient=True,
+    ) as bar:
+
+        def track(variant: str, total: int) -> Callable[[], None]:
+            label = "your prompt" if variant == PROMPT_VARIANT else f"baseline {variant}"
+            task = bar.add_task(f"Running {label}", total=total)
+            return lambda: bar.advance(task)
+
+        try:
+            result = run_eval(
+                prompt_text,
+                rows,
+                loaded,
+                lm=make_lm(model),
+                baselines=not no_baselines,
+                workers=workers,
+                prompt_source=_display_path(prompt),
+                dataset_source=_display_path(data),
+                plan_source=_display_path(plan_path),
+                progress=track,
+            )
+        except (RunError, TargetError) as e:
+            _fail(str(e))
+
+    try:
+        with Store(db) as store:
+            run_id = store.save_run(
+                result,
+                prompt_text=prompt_text,
+                rows=rows,
+                plan_text=plan_path.read_text(encoding="utf-8-sig"),
+            )
+            stored = store.path
+    except StoreError as e:
+        _fail(str(e))
+    result = result.model_copy(update={"id": run_id})
+
+    console.print(render_run(result))
+    _report_check_errors(result)
+    console.print(render_failures(result, rows, limit=3))
+    if loaded.criteria:
+        console.print(
+            f"\n{len(loaded.criteria)} question(s) for the LLM judge aren't scored yet; "
+            "that comes in a later HEMP version.",
+            style="yellow",
+            markup=False,
+        )
+    console.print(
+        f"\nSaved as run #{run_id} in {_display_path(stored)}. See it again with "
+        f"`hemp show {run_id}{f' --db {db}' if db else ''}`.",
+        markup=False,
+    )
+
+
+@app.command()
+def show(
+    run_id: Annotated[
+        int | None, typer.Argument(help="Run number to show. Leave out to list recent runs.")
+    ] = None,
+    failures: Annotated[int, typer.Option(help="How many failed examples to show.", min=0)] = 5,
+    db: DbOpt = None,
+) -> None:
+    """Show a stored run, or list recent runs."""
+    try:
+        with Store(db) as store:
+            if run_id is None:
+                console.print(render_runs(store.list_runs()))
+                return
+            result = store.load_run(run_id)
+            rows = store.load_rows(run_id)
+    except StoreError as e:
+        _fail(str(e))
+    console.print(render_run(result))
+    _report_check_errors(result)
+    if failures:
+        console.print(render_failures(result, rows, limit=failures))
+
+
+def _report_check_errors(result: RunResult) -> None:
+    for variant in result.variants:
+        for summary in variant.summary():
+            if summary.n_errors:
+                example = next(
+                    o.detail
+                    for ex in variant.examples
+                    for o in ex.checks
+                    if o.check_id == summary.check_id and o.error
+                )
+                _warn(
+                    f"check {summary.check_id} crashed on {summary.n_errors} example(s) "
+                    f"({variant.name}), counted as fails. First error: {example}"
+                )
+
+
+def _display_path(path: Path) -> str:
+    try:
+        return path.resolve().relative_to(Path.cwd().resolve()).as_posix()
+    except ValueError:
+        return path.as_posix()
 
 
 @app.command()
@@ -253,9 +405,3 @@ def calibrate(
 ) -> None:
     """Label a few outputs, optimize the judge, and report judge-human agreement."""
     _not_implemented("calibrate", 8)
-
-
-@app.command()
-def show(run_id: Annotated[str, typer.Argument(help="Run ID to display.")]) -> None:
-    """Show the results of a stored run."""
-    _not_implemented("show", 5)

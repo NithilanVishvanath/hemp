@@ -1,1 +1,5 @@
-"""SQLite result store and run diffing (milestones 5 and 7)."""
+"""SQLite result store (run diffing comes in milestone 7)."""
+
+from hemp.store.db import Store, StoreError, default_db_path
+
+__all__ = ["Store", "StoreError", "default_db_path"]

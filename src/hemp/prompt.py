@@ -8,12 +8,12 @@ import re
 
 from hemp.hashing import sha256_text
 
-_FIELD_RE = re.compile(r"(?<!\{)\{([A-Za-z_][\w\-]*)\}(?!\})")
+FIELD_RE = re.compile(r"(?<!\{)\{([A-Za-z_][\w\-]*)\}(?!\})")
 
 
 def template_fields(template: str) -> list[str]:
     """Placeholder names in the order they first appear."""
-    return list(dict.fromkeys(_FIELD_RE.findall(template)))
+    return list(dict.fromkeys(FIELD_RE.findall(template)))
 
 
 def prompt_hash(template: str) -> str:

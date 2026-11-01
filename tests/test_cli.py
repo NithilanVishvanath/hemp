@@ -36,9 +36,8 @@ def files(tmp_path: Path) -> tuple[Path, Path]:
     return prompt, data
 
 
-def test_stub_command_exits_with_message(files: tuple[Path, Path]) -> None:
-    prompt, data = files
-    result = runner.invoke(app, ["run", str(prompt), str(data)])
+def test_stub_command_exits_with_message() -> None:
+    result = runner.invoke(app, ["diff", "1", "2"])
     assert result.exit_code == 1
     assert "not implemented yet" in result.output
 
@@ -129,3 +128,107 @@ def test_metrics_lists_builtins() -> None:
     assert result.exit_code == 0
     assert "exact_match" in result.output
     assert "allowed_values" in result.output
+
+
+# --- run / show ---------------------------------------------------------------------
+
+
+@pytest.fixture
+def sentiment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+    import json
+
+    from fakes import SENTIMENT_PROMPT, SENTIMENT_ROWS, FakeLM, keyword_sentiment
+
+    import hemp.cli
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("HEMP_DB", raising=False)
+    monkeypatch.setattr(hemp.cli, "make_lm", lambda model: FakeLM(keyword_sentiment, model))
+    prompt = tmp_path / "prompt.txt"
+    prompt.write_text(SENTIMENT_PROMPT, encoding="utf-8")
+    data = tmp_path / "data.jsonl"
+    data.write_text("".join(json.dumps(r) + "\n" for r in SENTIMENT_ROWS), encoding="utf-8")
+    return prompt, data
+
+
+def test_run_needs_a_plan(sentiment: tuple[Path, Path]) -> None:
+    prompt, data = sentiment
+    result = runner.invoke(app, ["run", str(prompt), str(data)])
+    assert result.exit_code == 1
+    assert "No plan found" in result.output
+    assert "hemp plan" in result.output
+
+
+def test_run_then_show(sentiment: tuple[Path, Path], tmp_path: Path) -> None:
+    prompt, data = sentiment
+    planned = runner.invoke(app, ["plan", str(prompt), str(data), "--no-llm"])
+    assert planned.exit_code == 0, planned.output
+
+    result = runner.invoke(app, ["run", str(prompt), str(data), "--target-model", "fake/m"])
+    assert result.exit_code == 0, result.output
+    assert "exact_match_label" in result.output
+    assert "75% (9/12)" in result.output  # the prompt
+    assert "50% (6/12)" in result.output  # majority_class baseline
+    assert "Saved as run #1" in result.output
+    assert (tmp_path / ".hemp" / "hemp.db").exists()
+
+    shown = runner.invoke(app, ["show", "1"])
+    assert shown.exit_code == 0, shown.output
+    assert "75% (9/12)" in shown.output
+    assert "Failed examples (3" in shown.output
+    assert "It's ok" in shown.output
+
+    listed = runner.invoke(app, ["show"])
+    assert listed.exit_code == 0, listed.output
+    assert "#1" in listed.output
+    assert "fake/m" in listed.output
+
+
+def test_run_without_baselines_and_custom_db(sentiment: tuple[Path, Path], tmp_path: Path) -> None:
+    prompt, data = sentiment
+    runner.invoke(app, ["plan", str(prompt), str(data), "--no-llm"])
+    db = tmp_path / "custom.db"
+    result = runner.invoke(app, ["run", str(prompt), str(data), "--no-baselines", "--db", str(db)])
+    assert result.exit_code == 0, result.output
+    assert "(baseline)" not in result.output
+    assert db.exists()
+
+
+def test_run_warns_when_data_changed(sentiment: tuple[Path, Path]) -> None:
+    prompt, data = sentiment
+    runner.invoke(app, ["plan", str(prompt), str(data), "--no-llm"])
+    with data.open("a", encoding="utf-8") as f:
+        f.write('{"review": "Meh", "label": "neutral"}\n')
+    result = runner.invoke(app, ["run", str(prompt), str(data)])
+    assert result.exit_code == 0, result.output
+    assert "has changed since the plan was made" in result.output
+
+
+def test_run_reports_unreachable_model(
+    sentiment: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fakes import FakeLM
+
+    import hemp.cli
+
+    prompt, data = sentiment
+    runner.invoke(app, ["plan", str(prompt), str(data), "--no-llm"])
+    monkeypatch.setattr(
+        hemp.cli, "make_lm", lambda model: FakeLM(lambda p: ConnectionError("refused"), model)
+    )
+    result = runner.invoke(app, ["run", str(prompt), str(data)])
+    assert result.exit_code == 1
+    assert "ollama serve" in result.output
+    assert "Saved" not in result.output
+
+
+def test_show_unknown_run(sentiment: tuple[Path, Path]) -> None:
+    result = runner.invoke(app, ["show", "42"])
+    assert result.exit_code == 1
+    assert "no run #42" in result.output
+
+
+def test_show_with_no_runs(sentiment: tuple[Path, Path]) -> None:
+    result = runner.invoke(app, ["show"])
+    assert result.exit_code == 0
+    assert "No runs yet" in result.output
