@@ -53,6 +53,7 @@ def run_eval(
     dataset_source: str | None = None,
     plan_source: str | None = None,
     progress: ProgressFactory | None = None,
+    reuse: RunResult | None = None,
     now: datetime | None = None,
 ) -> RunResult:
     """Run `prompt` on every row with the target `lm` and score it with `plan`.
@@ -61,31 +62,75 @@ def run_eval(
     the plan's baselines are run and scored with the same checks. With `judge_lm`
     (a dspy.LM), the plan's questions are answered by the judge; without it they're
     left out.
+
+    `reuse` is an earlier run with the same plan, dataset, target and judge models
+    (see `Store.find_reusable_run`). Its baseline results are copied instead of
+    recomputed, since they can't differ.
     """
     _check_inputs(prompt, rows, plan)
+    judging = judge_lm is not None and bool(plan.criteria)
+    target_model = str(getattr(lm, "model", "unknown"))
+    judge_model = str(getattr(judge_lm, "model", "unknown")) if judging else None
+    if reuse is not None:
+        _check_reusable(reuse, plan, rows, target_model, judge_model)
     tasks = [fill_prompt(prompt, row) for row in rows]
-    variants = [_run_prompt(tasks, rows, plan, lm, workers, progress)]
+
+    fresh = [_run_prompt(tasks, rows, plan, lm, workers, progress)]
+    copied: list[VariantResult] = []
+    baselines_from: dict[str, int] = {}
     if baselines:
         for kind in plan.baselines:
-            variants.append(_run_baseline(kind, rows, plan, lm, workers, progress))
-    judging = judge_lm is not None and bool(plan.criteria)
+            earlier = reuse.variant(kind.value) if reuse is not None else None
+            if reuse is not None and reuse.id is not None and earlier is not None:
+                copied.append(earlier)
+                baselines_from[kind.value] = reuse.baselines_from.get(kind.value, reuse.id)
+            else:
+                fresh.append(_run_baseline(kind, rows, plan, lm, workers, progress))
     if judging:
-        variants = [_judge(v, tasks, rows, plan, judge_lm, workers, progress) for v in variants]
+        fresh = [_judge(v, tasks, rows, plan, judge_lm, workers, progress) for v in fresh]
+    order = [PROMPT_VARIANT, *(k.value for k in plan.baselines)]
+    variants = sorted([*fresh, *copied], key=lambda v: order.index(v.name))
     info = RunInfo(
         created_at=now or datetime.now(UTC),
         hemp_version=__version__,
         prompt_hash=prompt_hash(prompt),
         dataset_hash=dataset_hash(rows),
         plan_hash=plan.plan_hash(),
-        target_model=str(getattr(lm, "model", "unknown")),
-        judge_model=str(getattr(judge_lm, "model", "unknown")) if judging else None,
+        target_model=target_model,
+        judge_model=judge_model,
         prompt_source=prompt_source,
         dataset_source=dataset_source,
         plan_source=plan_source,
         n_examples=len(rows),
     )
     questions = {c.id: c.question for c in plan.criteria} if judging else {}
-    return RunResult(info=info, variants=variants, questions=questions)
+    return RunResult(
+        info=info, variants=variants, questions=questions, baselines_from=baselines_from
+    )
+
+
+def _check_reusable(
+    earlier: RunResult,
+    plan: EvalPlan,
+    rows: Sequence[Row],
+    target_model: str,
+    judge_model: str | None,
+) -> None:
+    mismatches = [
+        name
+        for name, before, now in (
+            ("plan", earlier.info.plan_hash, plan.plan_hash()),
+            ("dataset", earlier.info.dataset_hash, dataset_hash(rows)),
+            ("target model", earlier.info.target_model, target_model),
+            ("judge model", earlier.info.judge_model, judge_model),
+        )
+        if before != now
+    ]
+    if mismatches:
+        raise RunError(
+            f"Can't reuse baselines from run #{earlier.id}: its {', '.join(mismatches)} "
+            "differ from this run's."
+        )
 
 
 def _check_inputs(prompt: str, rows: Sequence[Row], plan: EvalPlan) -> None:

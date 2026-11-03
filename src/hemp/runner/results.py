@@ -103,6 +103,8 @@ class RunResult(_Model):
     info: RunInfo
     variants: list[VariantResult]
     questions: dict[str, str] = {}  # judge question ids -> text, for questions that were judged
+    # Baselines copied from an earlier run instead of recomputed: name -> that run's id.
+    baselines_from: dict[str, int] = {}
     id: int | None = None  # set once the run is stored
 
     def variant(self, name: str) -> VariantResult | None:

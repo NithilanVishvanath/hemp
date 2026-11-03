@@ -46,6 +46,16 @@ def render_run(result: RunResult) -> RenderableType:
             Text("model errors", style="red"), *(Text(str(n), style="red") for n in errors)
         )
     parts: list[RenderableType] = [header, table]
+    if result.baselines_from:
+        sources = sorted(set(result.baselines_from.values()))
+        runs = ", ".join(f"#{i}" for i in sources)
+        parts.append(
+            Text(
+                f"Baselines copied from run {runs} (same plan, data and models). "
+                "Use --fresh-baselines to recompute them.",
+                style="dim",
+            )
+        )
     if not check_ids:
         parts.append(Text("The plan has no checks, so nothing was scored.", style="yellow"))
     return Group(*parts)

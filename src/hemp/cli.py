@@ -273,6 +273,14 @@ def run(
     no_baselines: Annotated[
         bool, typer.Option("--no-baselines", help="Skip the plan's baselines.")
     ] = False,
+    fresh_baselines: Annotated[
+        bool,
+        typer.Option(
+            "--fresh-baselines",
+            help="Recompute the baselines even if an earlier run with the same plan, data "
+            "and models has them (e.g. after changing a plugin's code).",
+        ),
+    ] = False,
     db: DbOpt = None,
 ) -> None:
     """Run your prompt on the dataset, score it with the plan, and store the results."""
@@ -295,6 +303,20 @@ def run(
     models = ModelConfig.from_env()
     model = target_model or models.target
     use_judge = bool(loaded.criteria) and not no_judge
+    judge = judge_model or models.judge
+    reuse = None
+    if loaded.baselines and not no_baselines and not fresh_baselines:
+        try:
+            with Store(db) as store:
+                earlier = store.find_reusable_run(
+                    plan_hash=loaded.plan_hash(),
+                    dataset_hash=dataset_hash(rows),
+                    target_model=model,
+                    judge_model=judge if use_judge else None,
+                )
+                reuse = store.load_run(earlier) if earlier is not None else None
+        except StoreError as e:
+            _fail(str(e))
 
     with Progress(
         TextColumn("{task.description}"),
@@ -318,13 +340,14 @@ def run(
                 rows,
                 loaded,
                 lm=make_lm(model),
-                judge_lm=make_lm(judge_model or models.judge) if use_judge else None,
+                judge_lm=make_lm(judge) if use_judge else None,
                 baselines=not no_baselines,
                 workers=workers,
                 prompt_source=_display_path(prompt),
                 dataset_source=_display_path(data),
                 plan_source=_display_path(plan_path),
                 progress=track,
+                reuse=reuse,
             )
         except (RunError, TargetError, JudgeError) as e:
             _fail(str(e))

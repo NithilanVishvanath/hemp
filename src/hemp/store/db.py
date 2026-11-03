@@ -15,6 +15,7 @@ from typing import Self
 
 from hemp.dataset import Row
 from hemp.runner.results import (
+    PROMPT_VARIANT,
     CheckOutcome,
     ExampleResult,
     RunInfo,
@@ -23,7 +24,7 @@ from hemp.runner.results import (
 )
 
 DEFAULT_DB_PATH = Path(".hemp") / "hemp.db"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -41,7 +42,8 @@ CREATE TABLE IF NOT EXISTS runs (
     n_examples     INTEGER NOT NULL,
     prompt_text    TEXT NOT NULL,
     plan_text      TEXT,
-    questions_json TEXT NOT NULL DEFAULT '{}'
+    questions_json TEXT NOT NULL DEFAULT '{}',
+    baselines_from_json TEXT NOT NULL DEFAULT '{}'
 );
 CREATE TABLE IF NOT EXISTS outputs (
     run_id   INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
@@ -67,6 +69,12 @@ CREATE TABLE IF NOT EXISTS results (
 );
 CREATE INDEX IF NOT EXISTS runs_by_plan ON runs(plan_hash);
 """
+
+# Columns added after schema version 1, with their definitions.
+_ADDED_COLUMNS = [
+    ("questions_json", "TEXT NOT NULL DEFAULT '{}'"),
+    ("baselines_from_json", "TEXT NOT NULL DEFAULT '{}'"),
+]
 
 
 class StoreError(RuntimeError):
@@ -99,10 +107,9 @@ class Store:
         with self._db:
             self._db.executescript(_SCHEMA)
             columns = {row[1] for row in self._db.execute("PRAGMA table_info(runs)")}
-            if "questions_json" not in columns:  # databases from schema version 1
-                self._db.execute(
-                    "ALTER TABLE runs ADD COLUMN questions_json TEXT NOT NULL DEFAULT '{}'"
-                )
+            for name, definition in _ADDED_COLUMNS:  # columns older databases lack
+                if name not in columns:
+                    self._db.execute(f"ALTER TABLE runs ADD COLUMN {name} {definition}")
             self._db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def close(self) -> None:
@@ -135,8 +142,9 @@ class Store:
             cursor = db.execute(
                 "INSERT INTO runs (created_at, hemp_version, prompt_hash, dataset_hash, "
                 "plan_hash, target_model, judge_model, prompt_source, dataset_source, "
-                "plan_source, n_examples, prompt_text, plan_text, questions_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "plan_source, n_examples, prompt_text, plan_text, questions_json, "
+                "baselines_from_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     info.created_at.isoformat(),
                     info.hemp_version,
@@ -152,6 +160,7 @@ class Store:
                     prompt_text,
                     plan_text,
                     json.dumps(result.questions, ensure_ascii=False),
+                    json.dumps(result.baselines_from),
                 ),
             )
             run_id = cursor.lastrowid
@@ -208,7 +217,8 @@ class Store:
 
     def load_run(self, run_id: int) -> RunResult:
         found = self._db.execute(
-            f"SELECT {_INFO_COLUMNS}, questions_json FROM runs WHERE id = ?", (run_id,)
+            f"SELECT {_INFO_COLUMNS}, questions_json, baselines_from_json FROM runs WHERE id = ?",
+            (run_id,),
         ).fetchone()
         if found is None:
             raise StoreError(
@@ -246,9 +256,10 @@ class Store:
             )
         return RunResult(
             id=run_id,
-            info=_info(found[:-1]),
+            info=_info(found[:-2]),
             variants=[VariantResult(name=n, examples=ex) for n, ex in variants.items()],
-            questions=json.loads(found[-1]),
+            questions=json.loads(found[-2]),
+            baselines_from=json.loads(found[-1]),
         )
 
     def load_rows(self, run_id: int) -> list[Row]:
@@ -262,6 +273,19 @@ class Store:
 
     def latest_run_id(self) -> int | None:
         found = self._db.execute("SELECT MAX(id) FROM runs").fetchone()
+        return found[0] if found else None
+
+    def find_reusable_run(
+        self, *, plan_hash: str, dataset_hash: str, target_model: str, judge_model: str | None
+    ) -> int | None:
+        """The latest run with baselines whose plan, dataset and models all match."""
+        found = self._db.execute(
+            "SELECT id FROM runs WHERE plan_hash = ? AND dataset_hash = ? AND target_model = ? "
+            "AND judge_model IS ? AND EXISTS (SELECT 1 FROM outputs "
+            "WHERE outputs.run_id = runs.id AND outputs.variant != ?) "
+            "ORDER BY id DESC LIMIT 1",
+            (plan_hash, dataset_hash, target_model, judge_model, PROMPT_VARIANT),
+        ).fetchone()
         return found[0] if found else None
 
     def latest_run_ids(self, n: int) -> list[int]:

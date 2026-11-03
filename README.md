@@ -28,7 +28,7 @@ The planner uses a local Ollama model by default (`ollama_chat/qwen2.5:7b`). Pic
 uv run hemp run examples/sentiment/prompt.txt examples/sentiment/data.jsonl
 ```
 
-Runs your prompt on every row exactly as written, scores the outputs with the plan's checks, and does the same for the baselines so you can see whether your prompt beats them. Results are saved to `.hemp/hemp.db` (change it with `--db` or `$HEMP_DB`). `uv run hemp show` lists past runs; `uv run hemp show 3` shows run #3 with the examples that failed.
+Runs your prompt on every row exactly as written, scores the outputs with the plan's checks, and does the same for the baselines so you can see whether your prompt beats them. Baselines don't depend on your prompt, so when the plan, data and models match an earlier run, their results are copied from it instead of recomputed (`--fresh-baselines` forces a recompute, `--no-baselines` skips them). Results are saved to `.hemp/hemp.db` (change it with `--db` or `$HEMP_DB`). `uv run hemp show` lists past runs; `uv run hemp show 3` shows run #3 with the examples that failed.
 
 The plan's yes/no `questions` are answered by an LLM judge, one call per question per example. A question with `compare_to: <column>` shows the judge that column as the reference answer. Pick the judge with `--judge-model` (a bigger model than the one you're testing is usually better), or skip the questions with `--no-judge`.
 

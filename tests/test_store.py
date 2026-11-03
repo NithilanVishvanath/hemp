@@ -95,12 +95,16 @@ def test_upgrades_a_version_1_database(tmp_path: Path) -> None:
 
     path = tmp_path / "old.db"
     old = sqlite3.connect(path)
-    v1_schema = db_module._SCHEMA.replace(",\n    questions_json TEXT NOT NULL DEFAULT '{}'", "")
+    v1_schema = db_module._SCHEMA
+    for name, definition in db_module._ADDED_COLUMNS:
+        v1_schema = v1_schema.replace(f",\n    {name} {definition}", "")
     old.executescript(v1_schema)
     old.execute("PRAGMA user_version = 1")
     columns = {row[1] for row in old.execute("PRAGMA table_info(runs)")}
-    assert "questions_json" not in columns
+    assert not {"questions_json", "baselines_from_json"} & columns
     old.close()
     with Store(path) as store:
         run_id = save(store, make_run())
-        assert store.load_run(run_id).questions == {}
+        loaded = store.load_run(run_id)
+        assert loaded.questions == {}
+        assert loaded.baselines_from == {}
