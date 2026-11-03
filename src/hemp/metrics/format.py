@@ -103,11 +103,12 @@ def length(ctx: MetricContext, params: LengthParams) -> MetricResult:
         n = len(text)
     else:
         n = len(text.splitlines())
+    counted = f"{n} {params.unit[:-1] if n == 1 else params.unit}"  # "1 word", "2 words"
     if params.min is not None and n < params.min:
-        return MetricResult.check(False, f"{n} {params.unit}, below the minimum of {params.min}")
+        return MetricResult.check(False, f"{counted}, below the minimum of {params.min}")
     if params.max is not None and n > params.max:
-        return MetricResult.check(False, f"{n} {params.unit}, above the maximum of {params.max}")
-    return MetricResult.check(True, f"{n} {params.unit}")
+        return MetricResult.check(False, f"{counted}, above the maximum of {params.max}")
+    return MetricResult.check(True, counted)
 
 
 class RegexParams(MetricParams):

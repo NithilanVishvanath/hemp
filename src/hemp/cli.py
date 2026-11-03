@@ -25,7 +25,8 @@ from hemp.runner import PROMPT_VARIANT, RunError, RunResult, TargetError, run_ev
 from hemp.runner.judging import JudgeError
 from hemp.runner.render import render_failures, render_run, render_runs
 from hemp.runner.run import JUDGE_PREFIX
-from hemp.store import Store, StoreError
+from hemp.store import Store, StoreError, diff_runs
+from hemp.store.render import render_diff
 
 app = typer.Typer(
     name="hemp",
@@ -410,11 +411,49 @@ def _display_path(path: Path) -> str:
 
 @app.command()
 def diff(
-    run_a: Annotated[str, typer.Argument(help="Baseline run ID.")],
-    run_b: Annotated[str, typer.Argument(help="Run ID to compare against the baseline.")],
+    run_a: Annotated[
+        int | None,
+        typer.Argument(help="The run to compare against (before). Default: the second-latest."),
+    ] = None,
+    run_b: Annotated[
+        int | None, typer.Argument(help="The run to compare (after). Default: the latest.")
+    ] = None,
+    examples: Annotated[
+        int, typer.Option(help="How many fixed and broken examples to show.", min=0)
+    ] = 5,
+    fail_on_regression: Annotated[
+        bool,
+        typer.Option(
+            "--fail-on-regression",
+            help="Exit with code 1 if any check's pass rate went down (useful in CI).",
+        ),
+    ] = False,
+    db: DbOpt = None,
 ) -> None:
-    """Show criterion-level regressions and improvements between two runs."""
-    _not_implemented("diff", 7)
+    """Compare two runs: what changed, and which examples got fixed or broke."""
+    try:
+        with Store(db) as store:
+            if run_a is None or run_b is None:
+                latest = store.latest_run_ids(2)
+                if run_a is None and len(latest) < 2:
+                    _fail("Need at least two runs to compare. Make another with `hemp run`.")
+                if run_a is None:
+                    run_a, run_b = latest
+                elif run_b is None:
+                    run_b = latest[-1] if latest else None
+            if run_b is None or run_a == run_b:
+                _fail("Pick two different runs to compare. `hemp show` lists them.")
+            result_a, result_b = store.load_run(run_a), store.load_run(run_b)
+            rows_a, rows_b = store.load_rows(run_a), store.load_rows(run_b)
+            prompt_a, _ = store.load_texts(run_a)
+            prompt_b, _ = store.load_texts(run_b)
+    except StoreError as e:
+        _fail(str(e))
+    result = diff_runs(result_a, result_b, rows_a, rows_b)
+    console.print(render_diff(result, prompt_a, prompt_b, examples=examples))
+    if fail_on_regression and result.regressed:
+        err_console.print("A check's pass rate went down.", style="red", markup=False)
+        raise typer.Exit(code=1)
 
 
 @app.command()

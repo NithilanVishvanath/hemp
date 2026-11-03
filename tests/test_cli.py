@@ -36,8 +36,10 @@ def files(tmp_path: Path) -> tuple[Path, Path]:
     return prompt, data
 
 
-def test_stub_command_exits_with_message() -> None:
-    result = runner.invoke(app, ["diff", "1", "2"])
+def test_stub_command_exits_with_message(tmp_path: Path) -> None:
+    plan = tmp_path / "plan.yaml"
+    plan.write_text("")
+    result = runner.invoke(app, ["calibrate", str(plan)])
     assert result.exit_code == 1
     assert "not implemented yet" in result.output
 

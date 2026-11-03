@@ -164,6 +164,7 @@ def test_length_in_sentences() -> None:
     assert passed("length", answer, unit="sentences", min=1, max=2)
     assert not passed("length", answer + " It's neat.", unit="sentences", max=2)
     assert result("length", answer, unit="sentences", max=2).detail == "2 sentences"
+    assert result("length", "Hi.", unit="sentences", max=2).detail == "1 sentence"
 
 
 def test_length_param_validation() -> None:

@@ -32,6 +32,17 @@ Runs your prompt on every row exactly as written, scores the outputs with the pl
 
 The plan's yes/no `questions` are answered by an LLM judge, one call per question per example. A question with `compare_to: <column>` shows the judge that column as the reference answer. Pick the judge with `--judge-model` (a bigger model than the one you're testing is usually better), or skip the questions with `--no-judge`.
 
+## Compare prompt versions
+
+Edit your prompt, run again, then:
+
+```
+uv run hemp diff          # the two latest runs
+uv run hemp diff 3 5      # run #3 (before) against run #5 (after)
+```
+
+Shows what changed between the runs (prompt, plan, dataset, models), the prompt edits, each check's pass rate before and after, and the examples that got fixed or broke. Examples are matched by their row contents, so adding or reordering rows is fine. In CI, `--fail-on-regression` exits with code 1 if any check's pass rate went down.
+
 ## Your own metrics
 
 Write a metric in a Python file:

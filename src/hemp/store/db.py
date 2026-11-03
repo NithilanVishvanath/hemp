@@ -264,6 +264,22 @@ class Store:
         found = self._db.execute("SELECT MAX(id) FROM runs").fetchone()
         return found[0] if found else None
 
+    def latest_run_ids(self, n: int) -> list[int]:
+        """The ids of the `n` most recent runs, oldest first."""
+        rows = self._db.execute("SELECT id FROM runs ORDER BY id DESC LIMIT ?", (n,)).fetchall()
+        return [r[0] for r in reversed(rows)]
+
+    def load_texts(self, run_id: int) -> tuple[str, str | None]:
+        """The prompt and plan file text a run used."""
+        found = self._db.execute(
+            "SELECT prompt_text, plan_text FROM runs WHERE id = ?", (run_id,)
+        ).fetchone()
+        if found is None:
+            raise StoreError(
+                f"There's no run #{run_id} in {self.path}. `hemp show` lists the stored runs."
+            )
+        return found[0], found[1]
+
 
 _INFO_COLUMNS = (
     "created_at, hemp_version, prompt_hash, dataset_hash, plan_hash, target_model, "
