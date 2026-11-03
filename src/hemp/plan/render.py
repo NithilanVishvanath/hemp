@@ -36,7 +36,8 @@ def render_plan(plan: EvalPlan) -> RenderableType:
         questions.add_column("ID", style="dim")
         questions.add_column("Question", overflow="fold")
         for c in plan.criteria:
-            questions.add_row(c.id, c.question)
+            compare = f" (compared to {c.gold_column})" if c.gold_column else ""
+            questions.add_row(c.id, c.question + compare)
         parts.append(questions)
     else:
         parts.append(Text("No questions for the LLM judge.", style="yellow"))

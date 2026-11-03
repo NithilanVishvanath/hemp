@@ -22,7 +22,9 @@ from hemp.profile import profile_dataset
 from hemp.profile.profiler import dataset_hash
 from hemp.profile.render import print_profile
 from hemp.runner import PROMPT_VARIANT, RunError, RunResult, TargetError, run_eval
+from hemp.runner.judging import JudgeError
 from hemp.runner.render import render_failures, render_run, render_runs
+from hemp.runner.run import JUDGE_PREFIX
 from hemp.store import Store, StoreError
 
 app = typer.Typer(
@@ -257,6 +259,16 @@ def run(
         ),
     ] = None,
     workers: Annotated[int, typer.Option(help="How many model calls to make at once.", min=1)] = 4,
+    judge_model: Annotated[
+        str | None,
+        typer.Option(
+            help="LiteLLM model that answers the plan's questions. "
+            "Default: $HEMP_JUDGE_MODEL, $HEMP_MODEL, or a local Ollama model."
+        ),
+    ] = None,
+    no_judge: Annotated[
+        bool, typer.Option("--no-judge", help="Skip the plan's questions (no judge calls).")
+    ] = False,
     no_baselines: Annotated[
         bool, typer.Option("--no-baselines", help="Skip the plan's baselines.")
     ] = False,
@@ -279,7 +291,9 @@ def run(
             f"{data} has changed since the plan was made. That's fine if you changed it on purpose."
         )
     prompt_text = prompt.read_text(encoding="utf-8-sig")
-    model = target_model or ModelConfig.from_env().target
+    models = ModelConfig.from_env()
+    model = target_model or models.target
+    use_judge = bool(loaded.criteria) and not no_judge
 
     with Progress(
         TextColumn("{task.description}"),
@@ -290,9 +304,11 @@ def run(
         transient=True,
     ) as bar:
 
-        def track(variant: str, total: int) -> Callable[[], None]:
+        def track(step: str, total: int) -> Callable[[], None]:
+            judging = step.startswith(JUDGE_PREFIX)
+            variant = step.removeprefix(JUDGE_PREFIX)
             label = "your prompt" if variant == PROMPT_VARIANT else f"baseline {variant}"
-            task = bar.add_task(f"Running {label}", total=total)
+            task = bar.add_task(f"{'Judging' if judging else 'Running'} {label}", total=total)
             return lambda: bar.advance(task)
 
         try:
@@ -301,6 +317,7 @@ def run(
                 rows,
                 loaded,
                 lm=make_lm(model),
+                judge_lm=make_lm(judge_model or models.judge) if use_judge else None,
                 baselines=not no_baselines,
                 workers=workers,
                 prompt_source=_display_path(prompt),
@@ -308,7 +325,7 @@ def run(
                 plan_source=_display_path(plan_path),
                 progress=track,
             )
-        except (RunError, TargetError) as e:
+        except (RunError, TargetError, JudgeError) as e:
             _fail(str(e))
 
     try:
@@ -327,10 +344,9 @@ def run(
     console.print(render_run(result))
     _report_check_errors(result)
     console.print(render_failures(result, rows, limit=3))
-    if loaded.criteria:
+    if loaded.criteria and no_judge:
         console.print(
-            f"\n{len(loaded.criteria)} question(s) for the LLM judge aren't scored yet; "
-            "that comes in a later HEMP version.",
+            f"\nSkipped {len(loaded.criteria)} judge question(s) (--no-judge).",
             style="yellow",
             markup=False,
         )
@@ -375,9 +391,13 @@ def _report_check_errors(result: RunResult) -> None:
                     for o in ex.checks
                     if o.check_id == summary.check_id and o.error
                 )
+                if summary.check_id in result.questions:
+                    what, effect = "the judge failed", "left out of the score"
+                else:
+                    what, effect = "the check crashed", "counted as fails"
                 _warn(
-                    f"check {summary.check_id} crashed on {summary.n_errors} example(s) "
-                    f"({variant.name}), counted as fails. First error: {example}"
+                    f"{summary.check_id}: {what} on {summary.n_errors} example(s) "
+                    f"({variant.name}), {effect}. First error: {example}"
                 )
 
 

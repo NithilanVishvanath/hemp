@@ -69,5 +69,5 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 # DSPy signatures and modules are declared by subclassing dspy classes.
-module = ["hemp.plan.planner", "hemp.runner.target"]
+module = ["hemp.plan.planner", "hemp.runner.target", "hemp.metrics.judge"]
 disallow_subclassing_any = false

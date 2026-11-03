@@ -62,12 +62,13 @@ def dump_plan(plan: EvalPlan, name: str = "<this file>") -> str:
     parts.append(_section("columns", columns))
     parts.append(_section("checks", _checks_doc(plan), "automatic, no LLM needed"))
     if plan.criteria:
-        questions = [{"id": c.id, "ask": c.question} for c in plan.criteria]
+        questions = [_question_doc(c) for c in plan.criteria]
         parts.append(_section("questions", questions, 'an LLM judge answers each; "yes" = pass'))
     else:
         parts.append(
             "questions: []  # yes/no questions for an LLM judge, e.g.\n"
             "#  - id: q1\n#    ask: Is the answer polite?\n"
+            "#    compare_to: answer  # optional: show the judge this answer column\n"
         )
     if plan.baselines:
         lines = ["baselines:  # simple strategies your prompt should beat"]
@@ -108,6 +109,13 @@ def _checks_doc(plan: EvalPlan) -> list[dict[str, Any]]:
             doc["why"] = spec.rationale
         docs.append(doc)
     return docs
+
+
+def _question_doc(criterion: Criterion) -> dict[str, Any]:
+    doc: dict[str, Any] = {"id": criterion.id, "ask": criterion.question}
+    if criterion.gold_column:
+        doc["compare_to"] = criterion.gold_column
+    return doc
 
 
 def non_default_params(spec: CheckSpec) -> dict[str, Any]:
@@ -161,7 +169,7 @@ _Dumper.add_representer(list, _represent_list)
 
 
 def _yaml(data: Any) -> str:
-    return yaml.dump(data, Dumper=_Dumper, sort_keys=False, allow_unicode=True, width=100)
+    return yaml.dump(data, Dumper=_Dumper, sort_keys=False, allow_unicode=True, width=4096)
 
 
 def _section(key: str, value: Any, comment: str | None = None) -> str:
@@ -187,6 +195,7 @@ class _Columns(_Doc):
 class _Question(_Doc):
     id: str = Field(min_length=1)
     ask: str = Field(min_length=1)
+    compare_to: str | None = None
 
 
 class _About(_Doc):
@@ -257,7 +266,9 @@ def parse_plan(text: str, source: str = "plan", plugin_dir: Path | None = None) 
             format_checks=sections[MetricLayer.FORMAT],
             reference_metrics=sections[MetricLayer.REFERENCE],
             custom_metrics=sections[MetricLayer.CUSTOM],
-            criteria=[Criterion(id=q.id, question=q.ask) for q in doc.questions],
+            criteria=[
+                Criterion(id=q.id, question=q.ask, gold_column=q.compare_to) for q in doc.questions
+            ],
             baselines=doc.baselines,
         )
     except ValidationError as e:

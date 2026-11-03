@@ -81,3 +81,26 @@ def test_default_path_from_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setenv("HEMP_DB", str(tmp_path / "env.db"))
     with Store() as store:
         assert store.path == tmp_path / "env.db"
+
+
+def test_questions_round_trip(tmp_path: Path) -> None:
+    result = make_run().model_copy(update={"questions": {"q1": "Is it short?"}})
+    with Store(tmp_path / "runs.db") as store:
+        run_id = save(store, result)
+        assert store.load_run(run_id).questions == {"q1": "Is it short?"}
+
+
+def test_upgrades_a_version_1_database(tmp_path: Path) -> None:
+    from hemp.store import db as db_module
+
+    path = tmp_path / "old.db"
+    old = sqlite3.connect(path)
+    v1_schema = db_module._SCHEMA.replace(",\n    questions_json TEXT NOT NULL DEFAULT '{}'", "")
+    old.executescript(v1_schema)
+    old.execute("PRAGMA user_version = 1")
+    columns = {row[1] for row in old.execute("PRAGMA table_info(runs)")}
+    assert "questions_json" not in columns
+    old.close()
+    with Store(path) as store:
+        run_id = save(store, make_run())
+        assert store.load_run(run_id).questions == {}

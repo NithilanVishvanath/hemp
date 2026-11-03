@@ -4,6 +4,7 @@ from hemp.dataset import Row
 from hemp.metrics import MetricContext, get_metric
 from hemp.metrics.text import is_missing
 from hemp.plan.schema import CheckSpec, EvalPlan
+from hemp.runner.parallel import short_error
 from hemp.runner.results import CheckOutcome
 
 
@@ -36,7 +37,7 @@ def _one(spec: CheckSpec, row: Row, output: str, model_error: str | None) -> Che
             check_id=spec.id,
             passed=False,
             score=0.0,
-            detail=f"{type(e).__name__}: {e}".splitlines()[0][:500],
+            detail=short_error(e),
             error=True,
         )
     return CheckOutcome(

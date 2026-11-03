@@ -7,7 +7,6 @@ directly: the filled-in template goes out as a single user message, unchanged.
 import json
 import time
 from collections.abc import Callable, Sequence
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -15,6 +14,7 @@ import dspy
 
 from hemp.dataset import Row
 from hemp.prompt import FIELD_RE, template_fields
+from hemp.runner.parallel import run_all, short_error
 
 
 class PromptError(ValueError):
@@ -113,29 +113,25 @@ def generate(
 
     def one(prompt: str) -> Generation:
         start = time.perf_counter()
+        output, error = "", None
         try:
             output = program(prompt=prompt)
         except Exception as e:
-            error = f"{type(e).__name__}: {e}".splitlines()[0][:500]
-            result = Generation(output="", error=error, seconds=time.perf_counter() - start)
-        else:
-            result = Generation(output=output, error=None, seconds=time.perf_counter() - start)
+            error = short_error(e)
+        result = Generation(output=output, error=error, seconds=time.perf_counter() - start)
         if on_done is not None:
             on_done()
         return result
 
-    if not prompts:
-        return []
-    first = one(prompts[0])
-    if first.error is not None:
-        raise TargetError(_explain_failure(first.error, getattr(lm, "model", "the target model")))
-    if workers <= 1:
-        return [first, *(one(p) for p in prompts[1:])]
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        return [first, *pool.map(one, prompts[1:])]
+    def check_first(gen: Generation) -> None:
+        if gen.error is not None:
+            model = getattr(lm, "model", "the target model")
+            raise TargetError(explain_failure(gen.error, model, "--target-model"))
+
+    return run_all(one, prompts, workers=workers, check_first=check_first)
 
 
-def _explain_failure(error: str, model: str) -> str:
+def explain_failure(error: str, model: str, option: str) -> str:
     hint = (
         "Is Ollama running (`ollama serve`) and the model pulled (`ollama pull <model>`)?"
         if model.startswith("ollama")
@@ -143,5 +139,5 @@ def _explain_failure(error: str, model: str) -> str:
     )
     return (
         f"Couldn't get an answer from {model}: {error}\n{hint} "
-        "You can pick another model with --target-model."
+        f"You can pick another model with {option}."
     )

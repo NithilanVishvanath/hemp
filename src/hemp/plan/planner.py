@@ -22,6 +22,7 @@ from hemp.plan.defaults import (
     default_format_checks,
     default_reference_metrics,
     label_set_check,
+    reference_criteria,
 )
 from hemp.plan.schema import CheckSpec, Criterion, EvalPlan, PlanMeta
 from hemp.profile import DatasetProfile
@@ -124,15 +125,16 @@ def create_plan(
     reference = default_reference_metrics(profile, embed_model)
     format_checks = list(rule_checks)
     custom: list[CheckSpec] = []
+    fixed_criteria = reference_criteria(profile)
     criteria: list[Criterion] = []
 
     if lm is None:
         warnings.append(
-            "Planned without an LLM, so there are no rubric criteria or prompt-specific "
+            "Planned without an LLM, so there are no prompt-specific questions or "
             "format checks. Add them to the plan by hand, or re-run without --no-llm."
         )
     else:
-        proposal = _propose(prompt, profile, [*rule_checks, *reference], lm)
+        proposal = _propose(prompt, profile, [*rule_checks, *reference], fixed_criteria, lm)
         checks, check_warnings = _accept_checks(proposal.format_checks)
         warnings += check_warnings
         if label_check is not None and any(c.metric == "allowed_values" for c in checks):
@@ -158,7 +160,7 @@ def create_plan(
         gold_columns=profile.gold_columns,
         format_checks=_unique_ids(_dedupe(format_checks)),
         reference_metrics=reference,
-        criteria=criteria,
+        criteria=[*fixed_criteria, *criteria],
         custom_metrics=_unique_ids(_dedupe(custom)),
         baselines=default_baselines(profile),
     )
@@ -193,18 +195,24 @@ def describe_profile(profile: DatasetProfile) -> str:
     return "\n".join(lines)
 
 
-def describe_checks(specs: list[CheckSpec]) -> str:
+def describe_checks(specs: list[CheckSpec], criteria: list[Criterion] | None = None) -> str:
     lines = []
     for spec in specs:
         params = dict(spec.params)
         if spec.gold_column:
             params["gold_column"] = spec.gold_column
         lines.append(f"- {spec.metric} {json.dumps(params, ensure_ascii=False)}: {spec.rationale}")
+    for c in criteria or []:
+        lines.append(f"- criterion: {c.question}")
     return "\n".join(lines) or "(none)"
 
 
 def _propose(
-    prompt: str, profile: DatasetProfile, included: list[CheckSpec], lm: dspy.LM
+    prompt: str,
+    profile: DatasetProfile,
+    included: list[CheckSpec],
+    included_criteria: list[Criterion],
+    lm: dspy.LM,
 ) -> dspy.Prediction:
     available = json.dumps(catalog(MetricLayer.FORMAT, MetricLayer.CUSTOM), indent=1)
     try:
@@ -213,7 +221,7 @@ def _propose(
                 prompt_template=prompt,
                 dataset_profile=describe_profile(profile),
                 available_checks=available,
-                already_included=describe_checks(included),
+                already_included=describe_checks(included, included_criteria),
             )
     except Exception as e:
         raise PlannerError(_explain_failure(e, getattr(lm, "model", "the planner model"))) from e

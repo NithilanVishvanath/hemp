@@ -34,6 +34,7 @@ class Criterion(_Model):
 
     id: str = Field(min_length=1)
     question: str = Field(min_length=1)
+    gold_column: str | None = None  # shown to the judge as the reference answer
 
 
 class BaselineKind(StrEnum):
@@ -86,10 +87,11 @@ class EvalPlan(_Model):
         dupes = sorted({i for i in ids if ids.count(i) > 1})
         if dupes:
             raise ValueError(f"ids must be unique; duplicated: {', '.join(dupes)}")
-        for spec in self.checks():
-            if spec.gold_column is not None and spec.gold_column not in self.gold_columns:
+        compared: list[CheckSpec | Criterion] = [*self.checks(), *self.criteria]
+        for item in compared:
+            if item.gold_column is not None and item.gold_column not in self.gold_columns:
                 raise ValueError(
-                    f"'{spec.id}' compares to '{spec.gold_column}', which isn't an answer "
+                    f"'{item.id}' compares to '{item.gold_column}', which isn't an answer "
                     "column. Add it under columns: answer, or fix the name."
                 )
         if BaselineKind.MAJORITY_CLASS in self.baselines and not self.gold_columns:

@@ -1,5 +1,6 @@
 """Target runner, evaluator, and baselines."""
 
+from hemp.runner.judging import JudgeError
 from hemp.runner.results import (
     PROMPT_VARIANT,
     CheckOutcome,
@@ -17,6 +18,7 @@ __all__ = [
     "CheckOutcome",
     "CheckSummary",
     "ExampleResult",
+    "JudgeError",
     "PromptError",
     "RunError",
     "RunInfo",

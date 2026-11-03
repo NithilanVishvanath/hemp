@@ -232,3 +232,55 @@ def test_show_with_no_runs(sentiment: tuple[Path, Path]) -> None:
     result = runner.invoke(app, ["show"])
     assert result.exit_code == 0
     assert "No runs yet" in result.output
+
+
+def _add_question(prompt: Path) -> None:
+    plan = prompt.with_name("prompt.plan.yaml")
+    text = plan.read_text(encoding="utf-8")
+    text = text.replace("questions: []", "questions:\n  - id: q1\n    ask: Negative?")
+    plan.write_text(text, encoding="utf-8")
+
+
+def test_run_with_judge(sentiment: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch) -> None:
+    from dspy.utils import DummyLM
+    from fakes import FakeLM, keyword_sentiment
+
+    import hemp.cli
+
+    def fake_make_lm(model: str) -> object:
+        if model == "fake/judge":
+            lm = DummyLM(
+                {
+                    "negative\n": {"reason": "Negative.", "answer": "True"},
+                    "positive\n": {"reason": "Not negative.", "answer": "False"},
+                }
+            )
+            lm.model = model
+            return lm
+        return FakeLM(keyword_sentiment, model)
+
+    monkeypatch.setattr(hemp.cli, "make_lm", fake_make_lm)
+    prompt, data = sentiment
+    runner.invoke(app, ["plan", str(prompt), str(data), "--no-llm"])
+    _add_question(prompt)
+
+    result = runner.invoke(app, ["run", str(prompt), str(data), "--judge-model", "fake/judge"])
+    assert result.exit_code == 0, result.output
+    assert "judge: fake/judge" in result.output
+    assert "Judge questions" in result.output
+    assert "Negative?" in result.output
+    assert "25% (3/12)" in result.output
+    assert "q1: Not negative." in result.output  # judge's reason on a failed example
+
+    shown = runner.invoke(app, ["show", "1"])
+    assert "Negative?" in shown.output
+
+
+def test_run_no_judge(sentiment: tuple[Path, Path]) -> None:
+    prompt, data = sentiment
+    runner.invoke(app, ["plan", str(prompt), str(data), "--no-llm"])
+    _add_question(prompt)
+    result = runner.invoke(app, ["run", str(prompt), str(data), "--no-judge"])
+    assert result.exit_code == 0, result.output
+    assert "Skipped 1 judge question(s)" in result.output
+    assert "Judge questions" not in result.output

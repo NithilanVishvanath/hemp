@@ -370,3 +370,25 @@ def test_free_text_gold_uses_semantic_similarity() -> None:
     assert ref.metric == "semantic_similarity"
     assert ref.params == {"model": "ollama/custom-embed", "threshold": 0.75}
     assert "not that its facts are right" in ref.rationale
+
+
+def test_free_text_gold_adds_a_judge_question_that_sees_the_answer(tmp_path: Path) -> None:
+    rows = [
+        {"question": f"q{i}", "answer": f"a long free text answer number {i}"} for i in range(6)
+    ]
+    plan = create_plan("{question}", profile_rows(rows, prompt="{question}"), lm=None, now=NOW).plan
+    [criterion] = plan.criteria
+    assert criterion.id == "matches_answer"
+    assert criterion.gold_column == "answer"
+
+    path = write_plan(plan, tmp_path / "p.yaml")
+    text = path.read_text(encoding="utf-8")
+    assert "compare_to: answer" in text
+    assert read_plan(path) == plan
+
+
+def test_question_compare_to_must_be_an_answer_column(tmp_path: Path) -> None:
+    plan = plan_with(checks=[], criteria=[{"question": "Is it fair?"}]).plan
+    text = dump_plan(plan).replace("ask: Is it fair?", "ask: Is it fair?\n    compare_to: nope")
+    with pytest.raises(PlanError, match="'q1' compares to 'nope'"):
+        parse_plan(text)

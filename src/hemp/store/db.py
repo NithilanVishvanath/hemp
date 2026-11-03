@@ -23,7 +23,7 @@ from hemp.runner.results import (
 )
 
 DEFAULT_DB_PATH = Path(".hemp") / "hemp.db"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS runs (
     plan_source    TEXT,
     n_examples     INTEGER NOT NULL,
     prompt_text    TEXT NOT NULL,
-    plan_text      TEXT
+    plan_text      TEXT,
+    questions_json TEXT NOT NULL DEFAULT '{}'
 );
 CREATE TABLE IF NOT EXISTS outputs (
     run_id   INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
@@ -97,6 +98,11 @@ class Store:
             raise StoreError(f"{self.path} was written by a newer HEMP. Upgrade HEMP to read it.")
         with self._db:
             self._db.executescript(_SCHEMA)
+            columns = {row[1] for row in self._db.execute("PRAGMA table_info(runs)")}
+            if "questions_json" not in columns:  # databases from schema version 1
+                self._db.execute(
+                    "ALTER TABLE runs ADD COLUMN questions_json TEXT NOT NULL DEFAULT '{}'"
+                )
             self._db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def close(self) -> None:
@@ -129,8 +135,8 @@ class Store:
             cursor = db.execute(
                 "INSERT INTO runs (created_at, hemp_version, prompt_hash, dataset_hash, "
                 "plan_hash, target_model, judge_model, prompt_source, dataset_source, "
-                "plan_source, n_examples, prompt_text, plan_text) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "plan_source, n_examples, prompt_text, plan_text, questions_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     info.created_at.isoformat(),
                     info.hemp_version,
@@ -145,6 +151,7 @@ class Store:
                     info.n_examples,
                     prompt_text,
                     plan_text,
+                    json.dumps(result.questions, ensure_ascii=False),
                 ),
             )
             run_id = cursor.lastrowid
@@ -201,7 +208,7 @@ class Store:
 
     def load_run(self, run_id: int) -> RunResult:
         found = self._db.execute(
-            f"SELECT {_INFO_COLUMNS} FROM runs WHERE id = ?", (run_id,)
+            f"SELECT {_INFO_COLUMNS}, questions_json FROM runs WHERE id = ?", (run_id,)
         ).fetchone()
         if found is None:
             raise StoreError(
@@ -239,8 +246,9 @@ class Store:
             )
         return RunResult(
             id=run_id,
-            info=_info(found),
+            info=_info(found[:-1]),
             variants=[VariantResult(name=n, examples=ex) for n, ex in variants.items()],
+            questions=json.loads(found[-1]),
         )
 
     def load_rows(self, run_id: int) -> list[Row]:

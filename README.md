@@ -30,6 +30,8 @@ uv run hemp run examples/sentiment/prompt.txt examples/sentiment/data.jsonl
 
 Runs your prompt on every row exactly as written, scores the outputs with the plan's checks, and does the same for the baselines so you can see whether your prompt beats them. Results are saved to `.hemp/hemp.db` (change it with `--db` or `$HEMP_DB`). `uv run hemp show` lists past runs; `uv run hemp show 3` shows run #3 with the examples that failed.
 
+The plan's yes/no `questions` are answered by an LLM judge, one call per question per example. A question with `compare_to: <column>` shows the judge that column as the reference answer. Pick the judge with `--judge-model` (a bigger model than the one you're testing is usually better), or skip the questions with `--no-judge`.
+
 ## Your own metrics
 
 Write a metric in a Python file:

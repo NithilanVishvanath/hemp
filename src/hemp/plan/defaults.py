@@ -5,7 +5,7 @@ Reference metrics follow the gold column's type; baselines follow from the data.
 
 from hemp.metrics import get_metric
 from hemp.metrics.embeddings import DEFAULT_EMBED_MODEL
-from hemp.plan.schema import BaselineKind, CheckSpec
+from hemp.plan.schema import BaselineKind, CheckSpec, Criterion
 from hemp.profile import ColumnProfile, ColumnType, DatasetProfile
 
 MAX_LABELS_FOR_ALLOWED_VALUES = 20
@@ -87,6 +87,26 @@ def _reference_for(col: ColumnProfile, embed_model: str) -> CheckSpec | None:
             threshold=0.75,
         )
     return None
+
+
+def reference_criteria(profile: DatasetProfile) -> list[Criterion]:
+    """A judge question per free-text answer column: does the output agree with it?
+
+    semantic_similarity only measures closeness of topic, so "The capital is London"
+    scores high against "The capital is Paris". The judge catches that.
+    """
+    return [
+        Criterion(
+            id=f"matches_{name}",
+            question=(
+                "Does the output give the same answer as the reference, "
+                "without contradicting it or getting facts wrong?"
+            ),
+            gold_column=name,
+        )
+        for name in profile.gold_columns
+        if profile.column(name).type is ColumnType.TEXT
+    ]
 
 
 def default_baselines(profile: DatasetProfile) -> list[BaselineKind]:

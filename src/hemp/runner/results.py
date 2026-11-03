@@ -22,7 +22,9 @@ class CheckOutcome(_Model):
     passed: bool | None
     score: float | None
     detail: str = ""
-    error: bool = False  # the check itself crashed (counted as a fail)
+    # The check or the judge crashed. A crashed check counts as a fail; a failed
+    # judge call has no verdict (passed is None) and is left out of scores.
+    error: bool = False
 
     @property
     def skipped(self) -> bool:
@@ -40,9 +42,9 @@ class ExampleResult(_Model):
 class CheckSummary(_Model):
     check_id: str
     n_passed: int
-    n_scored: int  # examples the check applied to (not skipped)
-    n_skipped: int
-    n_errors: int
+    n_scored: int  # examples with a verdict
+    n_skipped: int  # not applicable, e.g. no answer value
+    n_errors: int  # the check or judge crashed
     mean_score: float | None
 
     @property
@@ -73,7 +75,7 @@ class VariantResult(_Model):
                     check_id=check_id,
                     n_passed=sum(1 for o in scored if o.passed),
                     n_scored=len(scored),
-                    n_skipped=len(outcomes) - len(scored),
+                    n_skipped=sum(1 for o in outcomes if o.skipped and not o.error),
                     n_errors=sum(1 for o in outcomes if o.error),
                     mean_score=sum(scores) / len(scores) if scores else None,
                 )
@@ -100,6 +102,7 @@ class RunInfo(_Model):
 class RunResult(_Model):
     info: RunInfo
     variants: list[VariantResult]
+    questions: dict[str, str] = {}  # judge question ids -> text, for questions that were judged
     id: int | None = None  # set once the run is stored
 
     def variant(self, name: str) -> VariantResult | None:

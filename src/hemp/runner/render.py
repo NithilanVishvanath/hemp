@@ -14,22 +14,31 @@ from hemp.runner.target import value_text
 def render_run(result: RunResult) -> RenderableType:
     info = result.info
     title = f"Run #{result.id}" if result.id is not None else "Run"
+    judge = f", judge: {info.judge_model}" if info.judge_model else ""
     header = Text.assemble(
         (title, "bold"),
-        f"  {info.n_examples} examples, target: {info.target_model}, plan {info.plan_hash[:12]}",
+        f"  {info.n_examples} examples, target: {info.target_model}{judge}, "
+        f"plan {info.plan_hash[:12]}",
     )
 
     table = Table(header_style="bold")
-    table.add_column("Check")
+    table.add_column("Check", overflow="fold")
     for variant in result.variants:
         name = "Your prompt" if variant.name == PROMPT_VARIANT else f"{variant.name} (baseline)"
         table.add_column(name, justify="right")
 
     summaries = [{s.check_id: s for s in v.summary()} for v in result.variants]
     check_ids = list(dict.fromkeys(cid for s in summaries for cid in s))
-    for check_id in check_ids:
-        cells = [_cell(s.get(check_id)) for s in summaries]
-        table.add_row(check_id, *cells)
+    checks = [c for c in check_ids if c not in result.questions]
+    questions = [c for c in check_ids if c in result.questions]
+    for check_id in checks:
+        table.add_row(check_id, *(_cell(s.get(check_id)) for s in summaries))
+    if questions:
+        table.add_section()
+        table.add_row(Text("Judge questions (yes = pass)", style="bold"))
+        for qid in questions:
+            label = Text.assemble((qid, "cyan"), f" {result.questions[qid]}")
+            table.add_row(label, *(_cell(s.get(qid)) for s in summaries))
 
     errors = [v.n_model_errors for v in result.variants]
     if any(errors):

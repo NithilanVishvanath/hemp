@@ -2,6 +2,7 @@
 
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
+from typing import Any
 
 from hemp._version import __version__
 from hemp.dataset import Row
@@ -11,6 +12,7 @@ from hemp.profile.profiler import dataset_hash
 from hemp.prompt import prompt_hash
 from hemp.runner.baselines import majority_answer, zero_shot_prompt
 from hemp.runner.evaluate import evaluate_output
+from hemp.runner.judging import judge_examples
 from hemp.runner.results import (
     PROMPT_VARIANT,
     ExampleResult,
@@ -28,9 +30,10 @@ from hemp.runner.target import (
     generate,
 )
 
-# Called once per variant with (variant name, number of examples); returns a
-# function called after each example is done.
+# Called once per step with (step name, number of items); returns a function called
+# after each item is done. Steps are variant names, or JUDGE_PREFIX + variant name.
 ProgressFactory = Callable[[str, int], ProgressFn]
+JUDGE_PREFIX = "judge:"
 
 
 class RunError(ValueError):
@@ -43,7 +46,7 @@ def run_eval(
     plan: EvalPlan,
     *,
     lm: TextLM,
-    judge_model: str | None = None,
+    judge_lm: Any | None = None,
     baselines: bool = True,
     workers: int = 4,
     prompt_source: str | None = None,
@@ -55,13 +58,19 @@ def run_eval(
     """Run `prompt` on every row with the target `lm` and score it with `plan`.
 
     The plan is used as-is; it's never changed or re-planned here. With `baselines`,
-    the plan's baselines are run and scored with the same checks.
+    the plan's baselines are run and scored with the same checks. With `judge_lm`
+    (a dspy.LM), the plan's questions are answered by the judge; without it they're
+    left out.
     """
     _check_inputs(prompt, rows, plan)
-    variants = [_run_prompt(prompt, rows, plan, lm, workers, progress)]
+    tasks = [fill_prompt(prompt, row) for row in rows]
+    variants = [_run_prompt(tasks, rows, plan, lm, workers, progress)]
     if baselines:
         for kind in plan.baselines:
             variants.append(_run_baseline(kind, rows, plan, lm, workers, progress))
+    judging = judge_lm is not None and bool(plan.criteria)
+    if judging:
+        variants = [_judge(v, tasks, rows, plan, judge_lm, workers, progress) for v in variants]
     info = RunInfo(
         created_at=now or datetime.now(UTC),
         hemp_version=__version__,
@@ -69,13 +78,14 @@ def run_eval(
         dataset_hash=dataset_hash(rows),
         plan_hash=plan.plan_hash(),
         target_model=str(getattr(lm, "model", "unknown")),
-        judge_model=judge_model,
+        judge_model=str(getattr(judge_lm, "model", "unknown")) if judging else None,
         prompt_source=prompt_source,
         dataset_source=dataset_source,
         plan_source=plan_source,
         n_examples=len(rows),
     )
-    return RunResult(info=info, variants=variants)
+    questions = {c.id: c.question for c in plan.criteria} if judging else {}
+    return RunResult(info=info, variants=variants, questions=questions)
 
 
 def _check_inputs(prompt: str, rows: Sequence[Row], plan: EvalPlan) -> None:
@@ -99,16 +109,15 @@ def _check_inputs(prompt: str, rows: Sequence[Row], plan: EvalPlan) -> None:
 
 
 def _run_prompt(
-    prompt: str,
+    tasks: Sequence[str],
     rows: Sequence[Row],
     plan: EvalPlan,
     lm: TextLM,
     workers: int,
     progress: ProgressFactory | None,
 ) -> VariantResult:
-    texts = [fill_prompt(prompt, row) for row in rows]
     on_done = progress(PROMPT_VARIANT, len(rows)) if progress else None
-    generations = generate(lm, texts, workers=workers, on_done=on_done)
+    generations = generate(lm, tasks, workers=workers, on_done=on_done)
     return _score(PROMPT_VARIANT, rows, plan, generations)
 
 
@@ -148,3 +157,24 @@ def _score(
         for i, (row, gen) in enumerate(zip(rows, generations, strict=True))
     ]
     return VariantResult(name=name, examples=examples)
+
+
+def _judge(
+    variant: VariantResult,
+    tasks: Sequence[str],
+    rows: Sequence[Row],
+    plan: EvalPlan,
+    judge_lm: Any,
+    workers: int,
+    progress: ProgressFactory | None,
+) -> VariantResult:
+    total = len(variant.examples) * len(plan.criteria)
+    on_done = progress(f"{JUDGE_PREFIX}{variant.name}", total) if progress else None
+    verdicts = judge_examples(
+        plan, rows, tasks, variant.examples, judge_lm, workers=workers, on_done=on_done
+    )
+    examples = [
+        ex.model_copy(update={"checks": [*ex.checks, *found]})
+        for ex, found in zip(variant.examples, verdicts, strict=True)
+    ]
+    return variant.model_copy(update={"examples": examples})
