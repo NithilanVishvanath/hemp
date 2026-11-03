@@ -6,7 +6,7 @@ from typing import Literal, Self
 from pydantic import Field, field_validator, model_validator
 
 from hemp.metrics.registry import MetricContext, MetricLayer, MetricParams, MetricResult, metric
-from hemp.metrics.text import has_path, normalize, parse_json
+from hemp.metrics.text import count_sentences, has_path, normalize, parse_json
 
 
 @metric("non_empty", layer=MetricLayer.FORMAT)
@@ -76,7 +76,9 @@ def allowed_values(ctx: MetricContext, params: AllowedValuesParams) -> MetricRes
 
 
 class LengthParams(MetricParams):
-    unit: Literal["words", "chars", "lines"] = "words"
+    unit: Literal["words", "sentences", "chars", "lines"] = Field(
+        "words", description="what to count; use sentences when the prompt limits sentences"
+    )
     min: int | None = Field(None, ge=0, description="inclusive lower bound")
     max: int | None = Field(None, ge=0, description="inclusive upper bound")
 
@@ -91,10 +93,12 @@ class LengthParams(MetricParams):
 
 @metric("length", layer=MetricLayer.FORMAT, params=LengthParams)
 def length(ctx: MetricContext, params: LengthParams) -> MetricResult:
-    """The output's length in words, characters, or lines is within bounds."""
+    """The output's length in words, sentences, characters, or lines is within bounds."""
     text = ctx.output.strip()
     if params.unit == "words":
         n = len(text.split())
+    elif params.unit == "sentences":
+        n = count_sentences(text)
     elif params.unit == "chars":
         n = len(text)
     else:

@@ -29,6 +29,7 @@ from hemp.profile import DatasetProfile
 from hemp.prompt import prompt_hash
 
 MAX_CRITERIA = 12
+MIN_QUESTION_WORDS = 3  # "Yes" or "Polite?" aren't questions a judge can answer
 SAMPLE_ROWS_FOR_PLANNER = 3
 SAMPLE_VALUE_MAX_CHARS = 200
 
@@ -55,6 +56,9 @@ class ProposeEvaluation(dspy.Signature):
        format, allowed labels, length limits, required JSON keys, required or forbidden
        patterns), select a metric from available_checks and set its params. Use only
        metric names and params listed there. Skip checks the prompt doesn't ask for.
+       For length limits, always set `unit` to what the prompt counts: "one or two
+       sentences" is {"unit": "sentences", "max": 2}, "under 50 words" is
+       {"unit": "words", "max": 50}.
     2. criteria: for each remaining instruction that needs judgment (tone, faithfulness
        to the input, completeness, following a constraint), write one yes/no question
        about a single output, answerable from the input row and the output. "Yes" must
@@ -271,6 +275,9 @@ def _accept_criteria(
     for p in proposed:
         question = " ".join(p.question.split())
         if not question or question.lower() in seen:
+            continue
+        if len(question.split()) < MIN_QUESTION_WORDS:
+            warnings.append(f"Dropped a proposed question that isn't a real question: {question!r}")
             continue
         seen.add(question.lower())
         criteria.append(Criterion(id=f"q{len(criteria) + 1}", question=question))

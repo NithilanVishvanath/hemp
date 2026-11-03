@@ -141,6 +141,31 @@ def test_length() -> None:
     assert result("length", "one two", max=5).detail == "2 words"
 
 
+@pytest.mark.parametrize(
+    ("text", "n"),
+    [
+        ("", 0),
+        ("No final punctuation", 1),
+        ("One. Two! Three?", 3),
+        ("Pi is 3.14. See example.com for more", 2),  # decimals and domains don't split
+        ("Add salt, e.g. a pinch. Done.", 2),  # nor common abbreviations
+        ('He said "stop." Then he left.', 2),
+        ("Really?!? Yes...", 2),
+    ],
+)
+def test_count_sentences(text: str, n: int) -> None:
+    from hemp.metrics.text import count_sentences
+
+    assert count_sentences(text) == n
+
+
+def test_length_in_sentences() -> None:
+    answer = "The sky is blue because air scatters blue light the most. That's Rayleigh scattering."
+    assert passed("length", answer, unit="sentences", min=1, max=2)
+    assert not passed("length", answer + " It's neat.", unit="sentences", max=2)
+    assert result("length", answer, unit="sentences", max=2).detail == "2 sentences"
+
+
 def test_length_param_validation() -> None:
     with pytest.raises(MetricError, match="at least one"):
         get_metric("length").validate_params({"unit": "words"})

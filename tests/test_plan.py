@@ -120,6 +120,14 @@ def test_criteria_deduped_numbered_and_capped() -> None:
     assert any("kept the first" in w for w in result.warnings)
 
 
+def test_too_short_questions_are_dropped() -> None:
+    result = plan_with(
+        checks=[], criteria=[{"question": "Yes"}, {"question": "Is the reply polite?"}]
+    )
+    assert [c.question for c in result.plan.criteria] == ["Is the reply polite?"]
+    assert any("isn't a real question: 'Yes'" in w for w in result.warnings)
+
+
 def test_repeated_check_ids_get_suffixes() -> None:
     plan = plan_with(
         checks=[

@@ -117,3 +117,30 @@ def same_value(a: Any, b: Any, case_sensitive: bool = False) -> bool:
     ):
         return math.isclose(a, b)
     return canonical_json(a) == canonical_json(b)
+
+
+# A sentence ends at . ! or ? (possibly with closing quotes or brackets) followed by
+# whitespace or the end of the text. "3.14" and "example.com" don't end sentences.
+_SENTENCE_END_RE = re.compile(r"[.!?]+[\"'”’)\]]*(?=\s|$)")  # noqa: RUF001
+_ABBREVIATIONS = frozenset(
+    {"e.g.", "i.e.", "etc.", "vs.", "mr.", "mrs.", "ms.", "dr.", "prof.", "st.", "no.", "approx."}
+)
+
+
+def count_sentences(text: str) -> int:
+    """Rough sentence count. Text without final punctuation still counts as a sentence."""
+    text = text.strip()
+    if not text:
+        return 0
+    count = 0
+    start = 0
+    for match in _SENTENCE_END_RE.finditer(text):
+        words = text[start : match.end()].split()
+        if words and words[-1].lower() in _ABBREVIATIONS:
+            continue
+        if text[start : match.start()].strip():
+            count += 1
+        start = match.end()
+    if text[start:].strip():
+        count += 1
+    return count
