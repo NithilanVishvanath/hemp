@@ -8,11 +8,12 @@ import os
 import sqlite3
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
 from typing import Self
 
+from hemp.calibrate.labels import Label, LabelItem
 from hemp.dataset import Row
 from hemp.runner.results import (
     PROMPT_VARIANT,
@@ -43,7 +44,8 @@ CREATE TABLE IF NOT EXISTS runs (
     prompt_text    TEXT NOT NULL,
     plan_text      TEXT,
     questions_json TEXT NOT NULL DEFAULT '{}',
-    baselines_from_json TEXT NOT NULL DEFAULT '{}'
+    baselines_from_json TEXT NOT NULL DEFAULT '{}',
+    data_dir       TEXT
 );
 CREATE TABLE IF NOT EXISTS outputs (
     run_id   INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
@@ -68,12 +70,28 @@ CREATE TABLE IF NOT EXISTS results (
     PRIMARY KEY (run_id, variant, example, check_id)
 );
 CREATE INDEX IF NOT EXISTS runs_by_plan ON runs(plan_hash);
+CREATE TABLE IF NOT EXISTS labels (
+    key        TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    question   TEXT NOT NULL,
+    task       TEXT NOT NULL,
+    output     TEXT NOT NULL,
+    reference  TEXT NOT NULL,
+    passed     INTEGER NOT NULL,
+    run_id     INTEGER,
+    variant    TEXT,
+    example    INTEGER,
+    images_json TEXT NOT NULL DEFAULT '[]'
+);
+CREATE INDEX IF NOT EXISTS labels_by_question ON labels(question);
 """
 
-# Columns added after schema version 1, with their definitions.
+# Columns added after their table was first released: (table, name, definition).
 _ADDED_COLUMNS = [
-    ("questions_json", "TEXT NOT NULL DEFAULT '{}'"),
-    ("baselines_from_json", "TEXT NOT NULL DEFAULT '{}'"),
+    ("runs", "questions_json", "TEXT NOT NULL DEFAULT '{}'"),
+    ("runs", "baselines_from_json", "TEXT NOT NULL DEFAULT '{}'"),
+    ("runs", "data_dir", "TEXT"),
+    ("labels", "images_json", "TEXT NOT NULL DEFAULT '[]'"),
 ]
 
 
@@ -106,10 +124,10 @@ class Store:
             raise StoreError(f"{self.path} was written by a newer HEMP. Upgrade HEMP to read it.")
         with self._db:
             self._db.executescript(_SCHEMA)
-            columns = {row[1] for row in self._db.execute("PRAGMA table_info(runs)")}
-            for name, definition in _ADDED_COLUMNS:  # columns older databases lack
+            for table, name, definition in _ADDED_COLUMNS:  # columns older databases lack
+                columns = {row[1] for row in self._db.execute(f"PRAGMA table_info({table})")}
                 if name not in columns:
-                    self._db.execute(f"ALTER TABLE runs ADD COLUMN {name} {definition}")
+                    self._db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
             self._db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def close(self) -> None:
@@ -143,8 +161,8 @@ class Store:
                 "INSERT INTO runs (created_at, hemp_version, prompt_hash, dataset_hash, "
                 "plan_hash, target_model, judge_model, prompt_source, dataset_source, "
                 "plan_source, n_examples, prompt_text, plan_text, questions_json, "
-                "baselines_from_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "baselines_from_json, data_dir) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     info.created_at.isoformat(),
                     info.hemp_version,
@@ -161,6 +179,7 @@ class Store:
                     plan_text,
                     json.dumps(result.questions, ensure_ascii=False),
                     json.dumps(result.baselines_from),
+                    info.data_dir,
                 ),
             )
             run_id = cursor.lastrowid
@@ -288,6 +307,61 @@ class Store:
         ).fetchone()
         return found[0] if found else None
 
+    def latest_judged_run(self, plan_hash: str) -> int | None:
+        """The latest run of this plan whose judge questions were answered."""
+        found = self._db.execute(
+            "SELECT id FROM runs WHERE plan_hash = ? AND questions_json != '{}' "
+            "ORDER BY id DESC LIMIT 1",
+            (plan_hash,),
+        ).fetchone()
+        return found[0] if found else None
+
+    # --- labels ------------------------------------------------------------------
+
+    def save_label(self, item: LabelItem, passed: bool) -> None:
+        """Store a human answer. Labeling the same thing again replaces the old answer."""
+        with self._transaction() as db:
+            db.execute(
+                "INSERT OR REPLACE INTO labels (key, created_at, question, task, output, "
+                "reference, passed, run_id, variant, example, images_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    item.key,
+                    datetime.now(UTC).isoformat(),
+                    item.question,
+                    item.task,
+                    item.output,
+                    item.reference,
+                    int(passed),
+                    item.run_id,
+                    item.variant,
+                    item.example,
+                    json.dumps(list(item.images)),
+                ),
+            )
+
+    def load_labels(self, questions: Sequence[str]) -> list[Label]:
+        """Labels for these question texts, oldest first."""
+        if not questions:
+            return []
+        marks = ", ".join("?" for _ in questions)
+        rows = self._db.execute(
+            "SELECT question, task, output, reference, passed, images_json FROM labels "
+            f"WHERE question IN ({marks}) ORDER BY created_at, key",
+            list(questions),
+        ).fetchall()
+        return [
+            Label(
+                question=q,
+                task=t,
+                output=o,
+                reference=r,
+                passed=bool(p),
+                images=tuple(json.loads(i)),
+            )
+            for q, t, o, r, p, i in rows
+        ]
+
     def latest_run_ids(self, n: int) -> list[int]:
         """The ids of the `n` most recent runs, oldest first."""
         rows = self._db.execute("SELECT id FROM runs ORDER BY id DESC LIMIT ?", (n,)).fetchall()
@@ -307,7 +381,7 @@ class Store:
 
 _INFO_COLUMNS = (
     "created_at, hemp_version, prompt_hash, dataset_hash, plan_hash, target_model, "
-    "judge_model, prompt_source, dataset_source, plan_source, n_examples"
+    "judge_model, prompt_source, dataset_source, plan_source, data_dir, n_examples"
 )
 
 

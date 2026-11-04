@@ -1,3 +1,4 @@
+import re
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -96,12 +97,13 @@ def test_upgrades_a_version_1_database(tmp_path: Path) -> None:
     path = tmp_path / "old.db"
     old = sqlite3.connect(path)
     v1_schema = db_module._SCHEMA
-    for name, definition in db_module._ADDED_COLUMNS:
-        v1_schema = v1_schema.replace(f",\n    {name} {definition}", "")
+    for _, name, definition in db_module._ADDED_COLUMNS:
+        v1_schema = re.sub(rf",\n\s+{name}\s+{re.escape(definition)}", "", v1_schema)
     old.executescript(v1_schema)
     old.execute("PRAGMA user_version = 1")
     columns = {row[1] for row in old.execute("PRAGMA table_info(runs)")}
-    assert not {"questions_json", "baselines_from_json"} & columns
+    columns |= {row[1] for row in old.execute("PRAGMA table_info(labels)")}
+    assert not {name for _, name, _ in db_module._ADDED_COLUMNS} & columns
     old.close()
     with Store(path) as store:
         run_id = save(store, make_run())

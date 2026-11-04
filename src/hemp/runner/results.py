@@ -96,6 +96,7 @@ class RunInfo(_Model):
     prompt_source: str | None = None
     dataset_source: str | None = None
     plan_source: str | None = None
+    data_dir: str | None = None  # where relative image paths were looked up
     n_examples: int
 
 

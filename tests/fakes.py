@@ -20,7 +20,11 @@ SENTIMENT_ROWS: list[Row] = [
 
 
 class FakeLM:
-    """Answers like dspy.LM: `lm(prompt) -> [text]`. Records every prompt it gets."""
+    """Answers like dspy.LM: `lm(prompt) -> [text]`. Records every prompt it gets.
+
+    Image requests (lm15.Request) are recorded as text, with each image shown as
+    `<image:BASE64>` so tests can tell images apart.
+    """
 
     def __init__(
         self, answer: Callable[[str], Any] | None = None, model: str = "fake/target"
@@ -30,13 +34,26 @@ class FakeLM:
         self.prompts: list[str] = []
         self._lock = threading.Lock()
 
-    def __call__(self, prompt: str) -> list[Any]:
+    def __call__(self, prompt: Any) -> list[Any]:
+        if not isinstance(prompt, str):
+            prompt = request_text(prompt)
         with self._lock:
             self.prompts.append(prompt)
         result = self.answer(prompt)
         if isinstance(result, Exception):
             raise result
         return [result]
+
+
+def request_text(request: Any) -> str:
+    out = []
+    for message in request.messages:
+        for part in message.parts:
+            if hasattr(part, "text"):
+                out.append(part.text)
+            else:
+                out.append(f"<image:{part.data or part.url}>")
+    return "".join(out)
 
 
 def keyword_sentiment(prompt: str) -> str:

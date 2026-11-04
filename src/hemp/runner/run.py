@@ -2,14 +2,17 @@
 
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from hemp._version import __version__
 from hemp.dataset import Row
+from hemp.images import image_columns, missing_images
+from hemp.metrics.judge import CalibratedJudge, judge_label
 from hemp.plan.schema import BaselineKind, EvalPlan
 from hemp.plan.validate import plan_problems
 from hemp.profile.profiler import dataset_hash
-from hemp.prompt import prompt_hash
+from hemp.prompt import prompt_hash, template_fields
 from hemp.runner.baselines import majority_answer, zero_shot_prompt
 from hemp.runner.evaluate import evaluate_output
 from hemp.runner.judging import judge_examples
@@ -23,10 +26,11 @@ from hemp.runner.results import (
 from hemp.runner.target import (
     Generation,
     ProgressFn,
+    PromptContent,
     PromptError,
     TextLM,
+    build_prompt,
     check_prompt_fields,
-    fill_prompt,
     generate,
 )
 
@@ -47,6 +51,7 @@ def run_eval(
     *,
     lm: TextLM,
     judge_lm: Any | None = None,
+    calibrated: CalibratedJudge | None = None,
     baselines: bool = True,
     workers: int = 4,
     prompt_source: str | None = None,
@@ -54,6 +59,7 @@ def run_eval(
     plan_source: str | None = None,
     progress: ProgressFactory | None = None,
     reuse: RunResult | None = None,
+    data_dir: Path | None = None,
     now: datetime | None = None,
 ) -> RunResult:
     """Run `prompt` on every row with the target `lm` and score it with `plan`.
@@ -61,19 +67,33 @@ def run_eval(
     The plan is used as-is; it's never changed or re-planned here. With `baselines`,
     the plan's baselines are run and scored with the same checks. With `judge_lm`
     (a dspy.LM), the plan's questions are answered by the judge; without it they're
-    left out.
+    left out. `calibrated` is a judge tuned with `hemp calibrate`.
 
     `reuse` is an earlier run with the same plan, dataset, target and judge models
     (see `Store.find_reusable_run`). Its baseline results are copied instead of
     recomputed, since they can't differ.
+
+    `data_dir` is where relative image paths in the dataset are looked up (usually
+    the dataset file's folder).
     """
     _check_inputs(prompt, rows, plan)
+    images = image_columns(rows, {*template_fields(prompt), *plan.input_columns})
+    missing = missing_images(rows, images, data_dir)
+    if missing:
+        shown = ", ".join(missing[:5]) + (
+            f" and {len(missing) - 5} more" if len(missing) > 5 else ""
+        )
+        raise RunError(
+            f"Can't find these images: {shown}. Paths are relative to the dataset file's folder."
+        )
     judging = judge_lm is not None and bool(plan.criteria)
     target_model = str(getattr(lm, "model", "unknown"))
-    judge_model = str(getattr(judge_lm, "model", "unknown")) if judging else None
+    judge_model = (
+        judge_label(str(getattr(judge_lm, "model", "unknown")), calibrated) if judging else None
+    )
     if reuse is not None:
-        _check_reusable(reuse, plan, rows, target_model, judge_model)
-    tasks = [fill_prompt(prompt, row) for row in rows]
+        _check_reusable(reuse, plan, rows, data_dir, target_model, judge_model)
+    tasks = [build_prompt(prompt, row, images, data_dir) for row in rows]
 
     fresh = [_run_prompt(tasks, rows, plan, lm, workers, progress)]
     copied: list[VariantResult] = []
@@ -85,22 +105,27 @@ def run_eval(
                 copied.append(earlier)
                 baselines_from[kind.value] = reuse.baselines_from.get(kind.value, reuse.id)
             else:
-                fresh.append(_run_baseline(kind, rows, plan, lm, workers, progress))
+                fresh.append(
+                    _run_baseline(kind, rows, plan, lm, images, data_dir, workers, progress)
+                )
     if judging:
-        fresh = [_judge(v, tasks, rows, plan, judge_lm, workers, progress) for v in fresh]
+        fresh = [
+            _judge(v, tasks, rows, plan, judge_lm, calibrated, workers, progress) for v in fresh
+        ]
     order = [PROMPT_VARIANT, *(k.value for k in plan.baselines)]
     variants = sorted([*fresh, *copied], key=lambda v: order.index(v.name))
     info = RunInfo(
         created_at=now or datetime.now(UTC),
         hemp_version=__version__,
         prompt_hash=prompt_hash(prompt),
-        dataset_hash=dataset_hash(rows),
+        dataset_hash=dataset_hash(rows, data_dir),
         plan_hash=plan.plan_hash(),
         target_model=target_model,
         judge_model=judge_model,
         prompt_source=prompt_source,
         dataset_source=dataset_source,
         plan_source=plan_source,
+        data_dir=str(data_dir.resolve()) if data_dir is not None else None,
         n_examples=len(rows),
     )
     questions = {c.id: c.question for c in plan.criteria} if judging else {}
@@ -113,6 +138,7 @@ def _check_reusable(
     earlier: RunResult,
     plan: EvalPlan,
     rows: Sequence[Row],
+    data_dir: Path | None,
     target_model: str,
     judge_model: str | None,
 ) -> None:
@@ -120,7 +146,7 @@ def _check_reusable(
         name
         for name, before, now in (
             ("plan", earlier.info.plan_hash, plan.plan_hash()),
-            ("dataset", earlier.info.dataset_hash, dataset_hash(rows)),
+            ("dataset", earlier.info.dataset_hash, dataset_hash(rows, data_dir)),
             ("target model", earlier.info.target_model, target_model),
             ("judge model", earlier.info.judge_model, judge_model),
         )
@@ -154,7 +180,7 @@ def _check_inputs(prompt: str, rows: Sequence[Row], plan: EvalPlan) -> None:
 
 
 def _run_prompt(
-    tasks: Sequence[str],
+    tasks: Sequence[PromptContent],
     rows: Sequence[Row],
     plan: EvalPlan,
     lm: TextLM,
@@ -171,6 +197,8 @@ def _run_baseline(
     rows: Sequence[Row],
     plan: EvalPlan,
     lm: TextLM,
+    images: set[str],
+    data_dir: Path | None,
     workers: int,
     progress: ProgressFactory | None,
 ) -> VariantResult:
@@ -183,7 +211,7 @@ def _run_baseline(
             if on_done:
                 on_done()
     else:
-        texts = [zero_shot_prompt(plan, row) for row in rows]
+        texts = [zero_shot_prompt(plan, row, images, data_dir) for row in rows]
         generations = generate(lm, texts, workers=workers, on_done=on_done)
     return _score(kind.value, rows, plan, generations)
 
@@ -206,17 +234,25 @@ def _score(
 
 def _judge(
     variant: VariantResult,
-    tasks: Sequence[str],
+    tasks: Sequence[PromptContent],
     rows: Sequence[Row],
     plan: EvalPlan,
     judge_lm: Any,
+    calibrated: CalibratedJudge | None,
     workers: int,
     progress: ProgressFactory | None,
 ) -> VariantResult:
     total = len(variant.examples) * len(plan.criteria)
     on_done = progress(f"{JUDGE_PREFIX}{variant.name}", total) if progress else None
     verdicts = judge_examples(
-        plan, rows, tasks, variant.examples, judge_lm, workers=workers, on_done=on_done
+        plan,
+        rows,
+        tasks,
+        variant.examples,
+        judge_lm,
+        workers=workers,
+        on_done=on_done,
+        calibrated=calibrated,
     )
     examples = [
         ex.model_copy(update={"checks": [*ex.checks, *found]})

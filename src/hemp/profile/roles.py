@@ -40,6 +40,10 @@ INPUT_HINTS = frozenset(
         "message",
         "content",
         "x",
+        "image",
+        "img",
+        "photo",
+        "picture",
     }
 )
 ID_NAMES = frozenset({"id", "uuid", "guid", "uid", "idx", "index", "key"})
@@ -73,7 +77,11 @@ def assign_roles(
 
     # With a prompt, a single unused column is most likely the answer column.
     if used is not None and not any(c.role is ColumnRole.GOLD for c in result):
-        leftovers = [i for i, c in enumerate(result) if c.role is ColumnRole.METADATA]
+        leftovers = [
+            i
+            for i, c in enumerate(result)
+            if c.role is ColumnRole.METADATA and c.type is not ColumnType.IMAGE
+        ]
         if len(leftovers) == 1:
             i = leftovers[0]
             result[i] = result[i].model_copy(

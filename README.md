@@ -32,6 +32,16 @@ Runs your prompt on every row exactly as written, scores the outputs with the pl
 
 The plan's yes/no `questions` are answered by an LLM judge, one call per question per example. A question with `compare_to: <column>` shows the judge that column as the reference answer. Pick the judge with `--judge-model` (a bigger model than the one you're testing is usually better), or skip the questions with `--no-judge`.
 
+## Check and tune the judge
+
+The judge's yes/no answers are only useful if they match yours. After a run with judge questions:
+
+```
+uv run hemp calibrate examples/qa/prompt.plan.yaml
+```
+
+Shows you outputs from the latest run, one at a time, with the judge's verdict hidden: answer each question yourself (`y`/`n`, `s` to skip, `q` to stop). HEMP then reports how often the judge agrees with you (accuracy and Cohen's kappa, per question). With 8 or more labels it also tunes the judge with DSPy on half of them and tests it on the other half; if the tuned judge agrees with you more, it's saved as `<plan>.judge.json` and `hemp run` uses it from then on. Labels are kept, so each session adds to them; `--label 0` just re-measures.
+
 ## Compare prompt versions
 
 Edit your prompt, run again, then:
@@ -42,6 +52,23 @@ uv run hemp diff 3 5      # run #3 (before) against run #5 (after)
 ```
 
 Shows what changed between the runs (prompt, plan, dataset, models), the prompt edits, each check's pass rate before and after, and the examples that got fixed or broke. Examples are matched by their row contents, so adding or reordering rows is fine. In CI, `--fail-on-regression` exits with code 1 if any check's pass rate went down.
+
+## Images
+
+A column whose values are image paths (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.bmp`), image URLs, or `data:image/...` URIs is an image column. Put it in your prompt like any other column:
+
+```
+Classify this photo as cat, dog or bird. Reply with the label only.
+{image}
+```
+
+```
+image,label
+photos/cat_01.jpg,cat
+photos/dog_01.jpg,dog
+```
+
+The model receives the image itself where `{image}` is, not the path. Relative paths are looked up next to the dataset file. The `zero_shot` baseline sends just the image, and the judge sees the images too. You need a model that can see images, e.g. `HEMP_MODEL=gemini/gemini-2.0-flash` (with `GEMINI_API_KEY` set) or a local vision model like `ollama_chat/gemma3:4b`. Replacing an image file counts as changing the dataset, so old baseline results aren't reused for it.
 
 ## Your own metrics
 

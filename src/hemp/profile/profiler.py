@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from hemp.dataset import Row, load_dataset
+from hemp.images import image_columns, images_digest, looks_like_image
 from hemp.profile.infer import (
     Value,
     ValueKind,
@@ -37,7 +38,14 @@ def profile_dataset(
 ) -> DatasetProfile:
     """Load a dataset file and profile it. `prompt` is the prompt template text, if known."""
     rows, fmt = load_dataset(path)
-    return profile_rows(rows, prompt=prompt, source=str(path), fmt=fmt.value, n_samples=n_samples)
+    return profile_rows(
+        rows,
+        prompt=prompt,
+        source=str(path),
+        fmt=fmt.value,
+        n_samples=n_samples,
+        base_dir=Path(path).parent,
+    )
 
 
 def profile_rows(
@@ -47,7 +55,9 @@ def profile_rows(
     source: str | None = None,
     fmt: str | None = None,
     n_samples: int = 5,
+    base_dir: Path | None = None,
 ) -> DatasetProfile:
+    """Profile rows. `base_dir` is where relative image paths are looked up."""
     names = list(dict.fromkeys(key for row in rows for key in row))
     columns = [_profile_column(name, [classify(row.get(name)) for row in rows]) for name in names]
 
@@ -58,7 +68,7 @@ def profile_rows(
         source=source,
         format=fmt,
         n_rows=len(rows),
-        dataset_hash=dataset_hash(rows),
+        dataset_hash=dataset_hash(rows, base_dir),
         columns=columns,
         sample_rows=[_truncate_row(row) for row in rows[:n_samples]],
         prompt_fields=fields,
@@ -66,12 +76,19 @@ def profile_rows(
     )
 
 
-def dataset_hash(rows: Sequence[Row]) -> str:
-    """SHA-256 of the row contents. Key order and file details (BOM, line endings) don't matter."""
+def dataset_hash(rows: Sequence[Row], base_dir: Path | None = None) -> str:
+    """SHA-256 of the row contents. Key order and file details (BOM, line endings) don't matter.
+
+    For image columns the image files' contents count too, so replacing an image
+    under the same name changes the hash. `base_dir` resolves relative image paths.
+    """
     digest = hashlib.sha256()
     for row in rows:
         digest.update(canonical_json(row).encode())
         digest.update(b"\n")
+    images = image_columns(rows)
+    if images:
+        digest.update(images_digest(rows, images, base_dir).encode())
     return digest.hexdigest()
 
 
@@ -81,7 +98,9 @@ def _profile_column(name: str, values: list[Value]) -> ColumnProfile:
     n_unique = len(counts)
 
     ctype = infer_column_type(present)
-    if ctype is ColumnType.TEXT and is_categorical(
+    if ctype is ColumnType.TEXT and all(looks_like_image(v.value) for v in present):
+        ctype = ColumnType.IMAGE
+    elif ctype is ColumnType.TEXT and is_categorical(
         n_unique, len(present), max(len(v.text) for v in present)
     ):
         ctype = ColumnType.CATEGORICAL
@@ -103,7 +122,14 @@ def _profile_column(name: str, values: list[Value]) -> ColumnProfile:
 def _top_values(
     ctype: ColumnType, present: list[Value], counts: Counter[str]
 ) -> list[ValueCount] | None:
-    if ctype in (ColumnType.TEXT, ColumnType.JSON, ColumnType.MIXED, ColumnType.EMPTY):
+    no_top_values = (
+        ColumnType.TEXT,
+        ColumnType.IMAGE,
+        ColumnType.JSON,
+        ColumnType.MIXED,
+        ColumnType.EMPTY,
+    )
+    if ctype in no_top_values:
         return None
     if len(counts) > MAX_UNIQUE_FOR_TOP_VALUES:
         return None

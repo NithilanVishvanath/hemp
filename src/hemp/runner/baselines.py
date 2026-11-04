@@ -7,12 +7,14 @@
 
 from collections import Counter
 from collections.abc import Sequence
+from pathlib import Path
 
 from hemp.dataset import Row
 from hemp.hashing import canonical_json
+from hemp.images import resolve
 from hemp.metrics.text import is_missing
 from hemp.plan.schema import EvalPlan
-from hemp.runner.target import value_text
+from hemp.runner.target import Part, PromptContent, merge_parts, value_text
 
 
 def majority_answer(plan: EvalPlan, rows: Sequence[Row]) -> str:
@@ -30,9 +32,31 @@ def majority_answer(plan: EvalPlan, rows: Sequence[Row]) -> str:
     return value_text(winner)
 
 
-def zero_shot_prompt(plan: EvalPlan, row: Row) -> str:
-    """Just the input: the bare value for one input column, `name: value` lines for several."""
+def zero_shot_prompt(
+    plan: EvalPlan,
+    row: Row,
+    images: set[str] | frozenset[str] = frozenset(),
+    base_dir: Path | None = None,
+) -> PromptContent:
+    """Just the input: the bare value for one input column, `name: value` lines for several.
+
+    Image columns are sent as the images themselves.
+    """
     columns = plan.input_columns
+
+    def value(name: str) -> Part:
+        raw = row.get(name)
+        if name in images and isinstance(raw, str) and raw.strip():
+            return resolve(raw, base_dir)
+        return value_text(raw)
+
+    if not images & set(columns):
+        if len(columns) == 1:
+            return value_text(row.get(columns[0]))
+        return "\n".join(f"{c}: {value_text(row.get(c))}" for c in columns)
     if len(columns) == 1:
-        return value_text(row.get(columns[0]))
-    return "\n".join(f"{c}: {value_text(row.get(c))}" for c in columns)
+        return (value(columns[0]),)
+    parts: list[Part] = []
+    for i, name in enumerate(columns):
+        parts += [("\n" if i else "") + f"{name}: ", value(name)]
+    return merge_parts(parts)

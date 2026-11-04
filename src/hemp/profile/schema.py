@@ -12,6 +12,7 @@ class ColumnType(StrEnum):
     FLOAT = "float"
     CATEGORICAL = "categorical"  # short strings from a small set of values
     TEXT = "text"  # free-form strings
+    IMAGE = "image"  # image file paths, URLs, or data URIs
     JSON = "json"  # objects/arrays, natively or as JSON-encoded strings
     MIXED = "mixed"  # structured and scalar values in the same column
     EMPTY = "empty"  # every value missing

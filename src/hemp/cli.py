@@ -5,18 +5,30 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, NoReturn
 
+import click
 import typer
 from rich.console import Console
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
 from hemp._version import __version__
+from hemp.calibrate import CalibrationFailed, label_candidates
+from hemp.calibrate import calibrate as calibrate_judge
+from hemp.calibrate.render import render_item, render_report
 from hemp.config import ModelConfig, make_lm
 from hemp.dataset import DatasetError, load_dataset
 from hemp.metrics import MetricError, list_metrics, load_plugin
+from hemp.metrics.judge import (
+    CalibratedJudge,
+    JudgeFileError,
+    judge_file_for,
+    judge_label,
+    read_calibrated,
+    write_calibrated,
+)
 from hemp.metrics.plugins import plugin_ref
 from hemp.metrics.registry import param_docs
-from hemp.plan import PlanError, PlannerError, create_plan, read_plan, write_plan
+from hemp.plan import EvalPlan, PlanError, PlannerError, create_plan, read_plan, write_plan
 from hemp.plan.render import render_plan
 from hemp.profile import profile_dataset
 from hemp.profile.profiler import dataset_hash
@@ -77,14 +89,6 @@ def _fail(message: str) -> NoReturn:
 
 def _warn(message: str) -> None:
     err_console.print(f"Warning: {message}", style="yellow", markup=False)
-
-
-def _not_implemented(command: str, milestone: int) -> NoReturn:
-    err_console.print(
-        f"[yellow]`hemp {command}` is not implemented yet[/yellow] "
-        f"(planned for milestone {milestone}; see CLAUDE.md)."
-    )
-    raise typer.Exit(code=1)
 
 
 def _version_callback(value: bool) -> None:
@@ -295,7 +299,7 @@ def run(
         rows, _ = load_dataset(data)
     except (PlanError, DatasetError) as e:
         _fail(str(e))
-    if dataset_hash(rows) != loaded.meta.dataset_hash:
+    if dataset_hash(rows, data.parent) != loaded.meta.dataset_hash:
         _warn(
             f"{data} has changed since the plan was made. That's fine if you changed it on purpose."
         )
@@ -304,15 +308,16 @@ def run(
     model = target_model or models.target
     use_judge = bool(loaded.criteria) and not no_judge
     judge = judge_model or models.judge
+    calibrated = _calibrated_judge(plan_path, judge) if use_judge else None
     reuse = None
     if loaded.baselines and not no_baselines and not fresh_baselines:
         try:
             with Store(db) as store:
                 earlier = store.find_reusable_run(
                     plan_hash=loaded.plan_hash(),
-                    dataset_hash=dataset_hash(rows),
+                    dataset_hash=dataset_hash(rows, data.parent),
                     target_model=model,
-                    judge_model=judge if use_judge else None,
+                    judge_model=judge_label(judge, calibrated) if use_judge else None,
                 )
                 reuse = store.load_run(earlier) if earlier is not None else None
         except StoreError as e:
@@ -341,6 +346,7 @@ def run(
                 loaded,
                 lm=make_lm(model),
                 judge_lm=make_lm(judge) if use_judge else None,
+                calibrated=calibrated,
                 baselines=not no_baselines,
                 workers=workers,
                 prompt_source=_display_path(prompt),
@@ -348,6 +354,7 @@ def run(
                 plan_source=_display_path(plan_path),
                 progress=track,
                 reuse=reuse,
+                data_dir=data.parent,
             )
         except (RunError, TargetError, JudgeError) as e:
             _fail(str(e))
@@ -403,6 +410,30 @@ def show(
     _report_check_errors(result)
     if failures:
         console.print(render_failures(result, rows, limit=failures))
+
+
+def _calibrated_judge(plan_path: Path, judge_model: str) -> CalibratedJudge | None:
+    path = judge_file_for(plan_path)
+    if not path.is_file():
+        return None
+    try:
+        calibrated = read_calibrated(path)
+    except JudgeFileError as e:
+        _fail(str(e))
+    if calibrated.judge_model != judge_model:
+        _warn(
+            f"{path} was tuned for {calibrated.judge_model}, not {judge_model}, so the default "
+            "judge is used. Re-run `hemp calibrate` with this judge model to tune it."
+        )
+        return None
+    agreement = "" if calibrated.agreement is None else f", {calibrated.agreement:.0%} agreement"
+    err_console.print(
+        f"Using the calibrated judge from {_display_path(path)} "
+        f"({calibrated.n_test} held-out labels{agreement}).",
+        style="dim",
+        markup=False,
+    )
+    return calibrated
 
 
 def _report_check_errors(result: RunResult) -> None:
@@ -484,6 +515,95 @@ def calibrate(
     plan_file: Annotated[
         Path, typer.Argument(help="Evaluation plan (YAML).", exists=True, dir_okay=False)
     ],
+    count: Annotated[
+        int, typer.Option("--label", "-n", help="How many outputs to label this time.", min=0)
+    ] = 20,
+    run_id: Annotated[
+        int | None,
+        typer.Option("--run", help="Run to take outputs from. Default: the plan's latest run."),
+    ] = None,
+    judge_model: Annotated[
+        str | None,
+        typer.Option(help="Judge model to measure and tune. Default: as for `hemp run`."),
+    ] = None,
+    workers: Annotated[int, typer.Option(help="How many judge calls to make at once.", min=1)] = 4,
+    db: DbOpt = None,
 ) -> None:
-    """Label a few outputs, optimize the judge, and report judge-human agreement."""
-    _not_implemented("calibrate", 8)
+    """Label some outputs yourself, then measure and tune how well the judge agrees with you."""
+    try:
+        loaded = read_plan(plan_file)
+    except PlanError as e:
+        _fail(str(e))
+    if not loaded.criteria:
+        _fail(f"{plan_file} has no questions for the judge, so there's nothing to calibrate.")
+    questions = [c.question for c in loaded.criteria]
+    model = judge_model or ModelConfig.from_env().judge
+
+    try:
+        with Store(db) as store:
+            if count:
+                _label_outputs(store, loaded, run_id, count)
+            labels = store.load_labels(questions)
+    except StoreError as e:
+        _fail(str(e))
+    if not labels:
+        _fail("No labels yet for this plan's questions. Run without --label 0 to add some.")
+
+    try:
+        with err_console.status(f"Measuring the judge ({model}) against your labels..."):
+            report = calibrate_judge(labels, make_lm(model), judge_model=model, workers=workers)
+    except CalibrationFailed as e:
+        _fail(str(e))
+    console.print(render_report(report))
+
+    target = judge_file_for(plan_file)
+    if report.tuned is not None:
+        write_calibrated(report.tuned, target)
+        console.print(
+            f"\nThe tuned judge agrees with you more, so it's saved to {_display_path(target)}. "
+            "`hemp run` uses it from now on (delete the file to go back).",
+            style="green",
+            markup=False,
+        )
+    elif report.after is not None:
+        console.print(
+            "\nThe tuned judge didn't agree with you more than the default one, so nothing was "
+            "saved. More labels, especially ones where the judge gets it wrong, help.",
+            style="yellow",
+            markup=False,
+        )
+
+
+def _label_outputs(store: Store, plan: EvalPlan, run_id: int | None, count: int) -> None:
+    """Show outputs one by one and store the user's yes/no answers."""
+    if run_id is None:
+        run_id = store.latest_judged_run(plan.plan_hash())
+        if run_id is None:
+            _warn(
+                "no run of this plan has judged outputs to label yet. Run `hemp run` first, "
+                "or pick a run with --run."
+            )
+            return
+    result = store.load_run(run_id)
+    prompt, _ = store.load_texts(run_id)
+    rows = store.load_rows(run_id)
+    already = {lb.key for lb in store.load_labels([c.question for c in plan.criteria])}
+    items = label_candidates(result, rows, prompt, plan, skip=already, n=count)
+    if not items:
+        console.print(f"Nothing new to label in run #{run_id}.", style="dim", markup=False)
+        return
+    console.print(
+        f"Label outputs from run #{run_id}. For each one, answer the question yourself: "
+        "y = yes (passes), n = no, s = skip, q = stop labeling. Answers are saved as you go.",
+        markup=False,
+    )
+    for number, item in enumerate(items, start=1):
+        console.print(render_item(item, number, len(items)))
+        answer = typer.prompt("Your answer [y/n/s/q]", type=_ANSWERS, show_choices=False)
+        if answer == "q":
+            break
+        if answer != "s":
+            store.save_label(item, answer == "y")
+
+
+_ANSWERS = click.Choice(["y", "n", "s", "q"], case_sensitive=False)

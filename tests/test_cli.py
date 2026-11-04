@@ -36,14 +36,6 @@ def files(tmp_path: Path) -> tuple[Path, Path]:
     return prompt, data
 
 
-def test_stub_command_exits_with_message(tmp_path: Path) -> None:
-    plan = tmp_path / "plan.yaml"
-    plan.write_text("")
-    result = runner.invoke(app, ["calibrate", str(plan)])
-    assert result.exit_code == 1
-    assert "not implemented yet" in result.output
-
-
 def test_plan_rejects_missing_file(tmp_path: Path) -> None:
     result = runner.invoke(app, ["plan", str(tmp_path / "nope.txt"), str(tmp_path / "x.jsonl")])
     assert result.exit_code == 2

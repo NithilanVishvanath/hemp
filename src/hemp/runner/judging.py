@@ -4,12 +4,19 @@ from collections.abc import Sequence
 from typing import Any
 
 from hemp.dataset import Row
-from hemp.metrics.judge import NO_REFERENCE, Judge, ask
+from hemp.metrics.judge import NO_REFERENCE, CalibratedJudge, Judge, ask, make_judge
 from hemp.metrics.text import is_missing
 from hemp.plan.schema import Criterion, EvalPlan
 from hemp.runner.parallel import run_all, short_error
 from hemp.runner.results import CheckOutcome, ExampleResult
-from hemp.runner.target import ProgressFn, explain_failure, value_text
+from hemp.runner.target import (
+    ProgressFn,
+    PromptContent,
+    explain_failure,
+    prompt_images,
+    prompt_text,
+    value_text,
+)
 
 
 class JudgeError(RuntimeError):
@@ -19,12 +26,13 @@ class JudgeError(RuntimeError):
 def judge_examples(
     plan: EvalPlan,
     rows: Sequence[Row],
-    tasks: Sequence[str],
+    tasks: Sequence[PromptContent],
     examples: Sequence[ExampleResult],
     judge_lm: Any,
     *,
     workers: int = 4,
     on_done: ProgressFn | None = None,
+    calibrated: CalibratedJudge | None = None,
 ) -> list[list[CheckOutcome]]:
     """Outcomes for each example (in order), one per question (in plan order).
 
@@ -32,7 +40,7 @@ def judge_examples(
     baselines, since the questions are about the user's task. A failed judge call
     (other than the first) is recorded as an error and left out of scores.
     """
-    judge = Judge()
+    judge = make_judge(calibrated)
     judge.set_lm(judge_lm)
     jobs = [(ex, criterion) for ex in examples for criterion in plan.criteria]
 
@@ -58,20 +66,25 @@ def judge_examples(
     return [outcomes[i * n : (i + 1) * n] for i in range(len(examples))]
 
 
+def reference_for(criterion: Criterion, row: Row) -> str | None:
+    """What the judge sees as the reference; None when the row has no answer to compare to."""
+    if criterion.gold_column is None:
+        return NO_REFERENCE
+    gold = row.get(criterion.gold_column)
+    return None if is_missing(gold) else value_text(gold)
+
+
 def _judge_one(
-    judge: Judge, criterion: Criterion, row: Row, task: str, ex: ExampleResult
+    judge: Judge, criterion: Criterion, row: Row, task: PromptContent, ex: ExampleResult
 ) -> CheckOutcome:
-    reference = NO_REFERENCE
-    if criterion.gold_column is not None:
-        gold = row.get(criterion.gold_column)
-        if is_missing(gold):
-            return CheckOutcome(
-                check_id=criterion.id,
-                passed=None,
-                score=None,
-                detail="no answer value for this row",
-            )
-        reference = value_text(gold)
+    reference = reference_for(criterion, row)
+    if reference is None:
+        return CheckOutcome(
+            check_id=criterion.id,
+            passed=None,
+            score=None,
+            detail="no answer value for this row",
+        )
     if ex.error is not None:
         return CheckOutcome(
             check_id=criterion.id,
@@ -81,7 +94,12 @@ def _judge_one(
         )
     try:
         verdict = ask(
-            judge, task=task, output=ex.output, question=criterion.question, reference=reference
+            judge,
+            task=prompt_text(task),
+            output=ex.output,
+            question=criterion.question,
+            reference=reference,
+            images=prompt_images(task),
         )
     except Exception as e:
         return CheckOutcome(
