@@ -1,5 +1,11 @@
+import os
 import sys
 from collections.abc import Iterator
+
+# A very wide terminal for CLI output, so messages never wrap. Otherwise where a
+# line wraps depends on the temp folder's path length, which differs per OS, and
+# phrases the tests look for can get split across lines.
+os.environ["COLUMNS"] = "1000"
 
 import pytest
 
